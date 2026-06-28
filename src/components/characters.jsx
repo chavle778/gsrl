@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { CHARACTERS } from "./constants";
-import '../app.css';
+import '../App.css';
 
 // ─── useInView hook ───────────────────────────────────────────────────────────
 function useInView(options = {}) {
