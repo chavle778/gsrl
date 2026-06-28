@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { supabase } from "../src/supabaseClient";
-import AdminLogin from "./AdminLogin";
-import AdminPanel from "./AdminPanel";
+import AdminLogin from "./adminLogin";
+import AdminPanel from "./adminPanel"
 
 export default function AdminApp() {
   const [user, setUser] = useState(null);
