@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   Shield, MessageSquare, CheckCircle2, XCircle, Clock, AlertCircle,
   User, ChevronRight, Send, Search, Filter, ArrowLeft, Home,
@@ -9,6 +9,7 @@ import {
   Edit2, Save, X as XIcon, PlusCircle, Tag, Award, Sparkles
 } from "lucide-react";
 import { supabase } from "../src/supabaseClient";
+
 /* ─── DEFAULT ROLES ───────────────────────────────────────────────────────── */
 const DEFAULT_ROLES = [
   {
@@ -1050,7 +1051,6 @@ function UsersManagement({ adminUser, roles }) {
   const roleButtonRefs = useRef({});
   const allRoles = roles || loadRoles();
 
-  // 🔥 Supabase-დან მომხმარებლების ჩატვირთვა
   const loadUsers = async () => {
     try {
       setLoading(true);
@@ -1099,7 +1099,6 @@ function UsersManagement({ adminUser, roles }) {
     if (showUsers) loadUsers(); 
   }, [showUsers]);
 
-  // Real-time updates
   useEffect(() => {
     if (!showUsers) return;
     
@@ -1141,7 +1140,6 @@ function UsersManagement({ adminUser, roles }) {
     const role = getRoleById(newRoleId, allRoles);
     
     try {
-      // Update profile in Supabase
       const { error } = await supabase
         .from('profiles')
         .update({ 
@@ -1152,15 +1150,12 @@ function UsersManagement({ adminUser, roles }) {
 
       if (error) throw error;
 
-      // Update local state
       const updated = users.map(u => u.id !== user.id ? u : {
         ...u,
         role: newRoleId,
         isAdmin: role?.level >= 2,
       });
       setUsers(updated);
-      
-      // Also update localStorage for fallback
       localStorage.setItem("grl_users", JSON.stringify(updated));
       
     } catch (error) {
@@ -1195,8 +1190,6 @@ function UsersManagement({ adminUser, roles }) {
     if (!newPasswordVal.trim()) return;
     
     try {
-      // In real app, you'd update password via auth.admin API
-      // For now, update local state
       const updated = users.map(u => u.id !== userId ? u : { ...u, password: newPasswordVal });
       setUsers(updated);
       localStorage.setItem("grl_users", JSON.stringify(updated));
@@ -1404,7 +1397,7 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
   const [replyText, setReplyText] = useState("");
   const [saving, setSaving] = useState(false);
   const [isEditingReply, setIsEditingReply] = useState(false);
-  const [editReplyText, setEditReplyText] = useState(cv.adminReply || "");
+  const [editReplyText, setEditReplyText] = useState(cv.admin_reply || "");
 
   let fields = {};
   try {
@@ -1458,7 +1451,7 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
           </div>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
-          {cv.vacancyClosed && (
+          {cv.vacancy_closed && (
             <span className="adm-badge adm-badge-cyan"><Lock size={11}/> დახურულია</span>
           )}
           {cv.hired && (
@@ -1505,7 +1498,7 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
         </div>
       )}
 
-      {cv.adminReply && (
+      {cv.admin_reply && (
         <div className="adm-post adm-post-admin" style={{ marginBottom:14 }}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
@@ -1514,14 +1507,14 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
               </div>
               <span style={{ fontWeight:700, fontSize:12, color:"var(--adm-pink)" }}>ადმინის პასუხი</span>
               <span style={{ fontSize:10, color:"var(--adm-muted-2)" }}>
-                {cv.adminReplyDate ? new Date(cv.adminReplyDate).toLocaleString("ka-GE") : ""}
+                {cv.admin_reply_date ? new Date(cv.admin_reply_date).toLocaleString("ka-GE") : ""}
               </span>
             </div>
             <div style={{ display:"flex", gap:4 }}>
               <button 
                 onClick={() => {
                   setIsEditingReply(true);
-                  setEditReplyText(cv.adminReply);
+                  setEditReplyText(cv.admin_reply);
                 }} 
                 className="adm-btn adm-btn-ghost adm-btn-sm" 
                 style={{ padding:"4px 8px", fontSize:"10px" }}
@@ -1542,7 +1535,7 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
                 autoFocus
               />
               <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
-                <button onClick={() => { setIsEditingReply(false); setEditReplyText(cv.adminReply); }} className="adm-btn adm-btn-ghost adm-btn-sm">
+                <button onClick={() => { setIsEditingReply(false); setEditReplyText(cv.admin_reply); }} className="adm-btn adm-btn-ghost adm-btn-sm">
                   <XIcon size={12}/> გაუქმება
                 </button>
                 <button onClick={handleEditReply} disabled={saving || !editReplyText.trim()} className="adm-btn adm-btn-success adm-btn-sm">
@@ -1551,12 +1544,12 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
               </div>
             </div>
           ) : (
-            <p style={{ fontSize:13, margin:0, whiteSpace:"pre-wrap" }}>{cv.adminReply}</p>
+            <p style={{ fontSize:13, margin:0, whiteSpace:"pre-wrap" }}>{cv.admin_reply}</p>
           )}
         </div>
       )}
 
-      {cv.vacancyClosed && !cv.hired && (
+      {cv.vacancy_closed && !cv.hired && (
         <div className="adm-verdict-box adm-verdict-approved" style={{ marginBottom:14 }}>
           <Lock size={16}/>
           <div style={{ fontSize:13, fontWeight:700 }}>
@@ -1565,7 +1558,7 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
         </div>
       )}
 
-      {!cv.vacancyClosed && !cv.hired && (
+      {!cv.vacancy_closed && !cv.hired && (
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap", borderTop:"1px solid var(--adm-border-2)", paddingTop:12 }}>
           <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
             {!status && !verdictMode && (
@@ -1656,7 +1649,6 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
   useEffect(() => {
     loadCVs();
 
-    // Real-time updates
     const subscription = supabase
       .channel('forum_cvs_changes')
       .on('postgres_changes', {
@@ -1751,7 +1743,6 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
               adminUser={adminUser}
               onVerdict={async (cvId, verdict, reason, shouldCloseVacancy) => {
                 try {
-                  // Update CV status
                   const { error } = await supabase
                     .from('forum_cvs')
                     .update({ 
@@ -1762,7 +1753,6 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
 
                   if (error) throw error;
 
-                  // Update local state
                   setCvs(prev => prev.map(c => 
                     c.id === cvId ? { ...c, status: verdict, status_reason: reason } : c
                   ));
@@ -1791,7 +1781,7 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
                   if (error) throw error;
 
                   setCvs(prev => prev.map(c => 
-                    c.id === cvId ? { ...c, adminReply: text, adminReplyDate: new Date() } : c
+                    c.id === cvId ? { ...c, admin_reply: text, admin_reply_date: new Date() } : c
                   ));
                 } catch (error) {
                   console.error('Error adding reply:', error);
@@ -1811,7 +1801,7 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
                   if (error) throw error;
 
                   setCvs(prev => prev.map(c => 
-                    c.id === cvId ? { ...c, adminReply: text, adminReplyDate: new Date() } : c
+                    c.id === cvId ? { ...c, admin_reply: text, admin_reply_date: new Date() } : c
                   ));
                 } catch (error) {
                   console.error('Error editing reply:', error);
@@ -1828,7 +1818,7 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
                   if (error) throw error;
 
                   setCvs(prev => prev.map(c => 
-                    c.id === cvId ? { ...c, vacancyClosed: true } : c
+                    c.id === cvId ? { ...c, vacancy_closed: true } : c
                   ));
                   
                   const cv = cvs.find(c => c.id === cvId);
@@ -1864,6 +1854,43 @@ export default function AdminPanel() {
   const [reply, setReply] = useState("");
   const [saving, setSaving] = useState(false);
   const [roles, setRoles] = useState(loadRoles);
+  const [cvsCount, setCvsCount] = useState(0);
+
+  // ─── Load CV Count ──────────────────────────────────────────────────────
+  useEffect(() => {
+    const loadCVCount = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('forum_cvs')
+          .select('*', { count: 'exact', head: true });
+        
+        if (error) throw error;
+        setCvsCount(data?.length || 0);
+      } catch (error) {
+        console.error('Error loading CV count:', error);
+        try {
+          const cvs = JSON.parse(localStorage.getItem("grl_cvs") || "[]");
+          setCvsCount(cvs.length);
+        } catch { setCvsCount(0); }
+      }
+    };
+    
+    loadCVCount();
+
+    // Real-time updates for CV count
+    const subscription = supabase
+      .channel('forum_cvs_count')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'forum_cvs'
+      }, () => {
+        loadCVCount();
+      })
+      .subscribe();
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   // ─── Load Threads from Supabase ──────────────────────────────────────────
   const loadThreads = async () => {
@@ -2005,7 +2032,6 @@ export default function AdminPanel() {
         is_user_reply: true,
       };
 
-      // Update thread
       const { error: threadError } = await supabase
         .from('forum_threads')
         .update({
@@ -2019,7 +2045,6 @@ export default function AdminPanel() {
 
       if (threadError) throw threadError;
 
-      // Add admin post
       const { error: postError } = await supabase
         .from('forum_posts')
         .insert([adminPost]);
@@ -2028,7 +2053,6 @@ export default function AdminPanel() {
 
       await supabase.rpc('increment_forum_thread_replies', { thread_id: selected.id });
 
-      // Update local state
       setThreads(prev => prev.map(t => 
         t.id === selected.id 
           ? { 
@@ -2055,7 +2079,6 @@ export default function AdminPanel() {
 
   const handleCloseVacancy = async (threadId, cvId) => {
     try {
-      // Update thread
       const { error: threadError } = await supabase
         .from('forum_threads')
         .update({
@@ -2070,7 +2093,6 @@ export default function AdminPanel() {
 
       if (threadError) throw threadError;
 
-      // Update CV
       const { error: cvError } = await supabase
         .from('forum_cvs')
         .update({
