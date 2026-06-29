@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   Shield, MessageSquare, CheckCircle2, XCircle, Clock, AlertCircle,
   User, ChevronRight, Send, Search, Filter, ArrowLeft, Home,
@@ -10,147 +10,67 @@ import {
 } from "lucide-react";
 import { supabase } from "../src/supabaseClient";
 
-/* ─── DEFAULT ROLES ───────────────────────────────────────────────────────── */
-const DEFAULT_ROLES = [
-  {
-    id: "project_team",
-    label: "Project Team",
-    labelShort: "P.TEAM",
-    color: "#ff2d78",
-    glow: "oklch(0.72 0.22 5 / 0.4)",
-    bg: "oklch(0.72 0.22 5 / 0.12)",
-    border: "oklch(0.72 0.22 5 / 0.45)",
-    badgeClass: "adm-badge-pink",
-    icon: "Crown",
-    level: 11,
-    description: "სერვერის უმაღლესი ჯგუფი",
-    duties: "Project Team-ის წევრია — ვალდებული არ არის. სრული ხედვა.",
-    canGrant: [],
-    isDefault: true,
-  },
-  {
-    id: "d_chief",
-    label: "D.Chief",
-    labelShort: "D.CHIEF",
-    color: "#f97316",
-    glow: "oklch(0.75 0.18 45 / 0.4)",
-    bg: "oklch(0.75 0.18 45 / 0.12)",
-    border: "oklch(0.75 0.18 45 / 0.45)",
-    badgeClass: "adm-badge-orange",
-    icon: "Star",
-    level: 9,
-    description: "მთავარი ადმინისტრატორი",
-    duties: "TEC-ს ნიშნავს · CV-ებს წერს ადმინ-აყვანაზე",
-    canGrant: ["tec", "player"],
-    isDefault: true,
-  },
-  {
-    id: "chief",
-    label: "Chief",
-    labelShort: "CHIEF",
-    color: "#fb923c",
-    glow: "oklch(0.78 0.16 55 / 0.4)",
-    bg: "oklch(0.78 0.16 55 / 0.12)",
-    border: "oklch(0.78 0.16 55 / 0.45)",
-    badgeClass: "adm-badge-orange",
-    icon: "Star",
-    level: 10,
-    description: "ადმინ-ჯგუფის ხელმძღვანელი",
-    duties: "TEC-ს ნიშნავს · CV-ებს წერს ადმინ-აყვანაზე",
-    canGrant: ["tec", "player"],
-    isDefault: true,
-  },
-  {
-    id: "tec",
-    label: "TEC",
-    labelShort: "TEC",
-    color: "#facc15",
-    glow: "oklch(0.82 0.16 80 / 0.4)",
-    bg: "oklch(0.82 0.16 80 / 0.12)",
-    border: "oklch(0.82 0.16 80 / 0.45)",
-    badgeClass: "adm-badge-yellow",
-    icon: "Swords",
-    level: 8,
-    description: "ადმინისტრატორი",
-    duties: "მუშაობს საჩივრებსა და შეწყალებებზე",
-    canGrant: ["player"],
-    isDefault: true,
-  },
-  {
-    id: "player",
-    label: "მოთამაშე",
-    labelShort: "PLAYER",
-    color: "oklch(0.75 0.03 270)",
-    glow: "oklch(0.50 0.04 270 / 0.3)",
-    bg: "oklch(1 0 0 / 0.04)",
-    border: "oklch(1 0 0 / 0.12)",
-    badgeClass: "adm-badge-gray",
-    icon: "User",
-    level: 0,
-    description: "ჩვეულებრივი მოთამაშე",
-    duties: "ფორუმზე მონაწილეობა",
-    canGrant: [],
-    isDefault: true,
-  },
-];
-
-// ─── Icon mapping ───────────────────────────────────────────────────────────
+/* ─── ICON MAP ────────────────────────────────────────────────────────────── */
 const ICON_MAP = {
-  User: User,
-  Shield: Shield,
-  Star: Star,
-  Crown: Crown,
-  Swords: Swords,
-  UserCheck: UserCheck,
-  Briefcase: Briefcase,
-  Award: Award,
-  Sparkles: Sparkles,
+  User, Shield, Star, Crown, Swords, UserCheck, Briefcase, Award, Sparkles,
 };
+const getIconComponent = (iconName) => ICON_MAP[iconName] || User;
 
-const getIconComponent = (iconName) => {
-  return ICON_MAP[iconName] || User;
-};
+/* ─── ROLES — fetched from Supabase ──────────────────────────────────────── */
+async function fetchRoles() {
+  const { data, error } = await supabase.from("roles").select("*").order("level", { ascending: false });
+  if (error) { console.error("fetchRoles error:", error); return []; }
+  return data || [];
+}
 
-// ─── Load roles from localStorage or use defaults ───
-const loadRoles = () => {
-  try {
-    const stored = localStorage.getItem("grl_custom_roles");
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      const defaultIds = DEFAULT_ROLES.map(r => r.id);
-      const customRoles = parsed.filter(r => !defaultIds.includes(r.id));
-      const fixedCustom = customRoles.map(r => ({
-        ...r,
-        icon: typeof r.icon === 'string' ? r.icon : 'User'
-      }));
-      return [...DEFAULT_ROLES, ...fixedCustom];
-    }
-  } catch {}
-  return DEFAULT_ROLES;
-};
+async function persistNewRole(role) {
+  const { error } = await supabase.from("roles").insert({
+    id: role.id,
+    label: role.label,
+    label_short: role.labelShort,
+    color: role.color,
+    glow: role.glow,
+    bg: role.bg,
+    border: role.border,
+    badge_class: role.badgeClass,
+    icon: role.icon,
+    level: role.level,
+    description: role.description,
+    duties: role.duties,
+    can_grant: role.canGrant,
+    is_default: false,
+  });
+  return error;
+}
 
-const saveRoles = (roles) => {
-  try {
-    const defaultIds = DEFAULT_ROLES.map(r => r.id);
-    const customRoles = roles
-      .filter(r => !defaultIds.includes(r.id))
-      .map(r => ({
-        ...r,
-        icon: typeof r.icon === 'string' ? r.icon : 'User'
-      }));
-    localStorage.setItem("grl_custom_roles", JSON.stringify(customRoles));
-  } catch {}
-};
+async function persistRoleUpdate(roleId, patch) {
+  const { error } = await supabase.from("roles").update({
+    label: patch.label,
+    label_short: patch.labelShort,
+    color: patch.color,
+    level: patch.level,
+    description: patch.description,
+    duties: patch.duties,
+    can_grant: patch.canGrant,
+    icon: patch.icon,
+  }).eq("id", roleId);
+  return error;
+}
+
+async function persistRoleDelete(roleId) {
+  const { error } = await supabase.from("roles").delete().eq("id", roleId);
+  return error;
+}
 
 const getRoleById = (id, roles) => {
-  const allRoles = roles || loadRoles();
-  return allRoles.find(r => r.id === id) || allRoles.find(r => r.id === "player");
+  const allRoles = roles || [];
+  return allRoles.find(r => r.id === id) || allRoles.find(r => r.id === "player") || null;
 };
 
 const normalizeRole = (user, roles) => {
   if (!user) return "player";
   const r = user.role;
-  const allRoles = roles || loadRoles();
+  const allRoles = roles || [];
   if (allRoles.some(role => role.id === r)) return r;
   if (r === "admin" || r === "ადმინისტრატორი" || user.isAdmin) return "tec";
   return "player";
@@ -501,18 +421,17 @@ const injectAdminStyles = () => {
 
 /* ─── ROLE BADGE ─────────────────────────────────────────────────────────── */
 function RoleBadge({ roleId, size = "sm", roles }) {
-  const allRoles = roles || loadRoles();
-  const role = getRoleById(roleId, allRoles);
+  const role = getRoleById(roleId, roles);
   const IconName = role?.icon || "User";
   const Icon = getIconComponent(IconName);
-  
+
   return (
     <span
-      className={`adm-badge ${role?.badgeClass || "adm-badge-gray"}`}
+      className={`adm-badge ${role?.badge_class || "adm-badge-gray"}`}
       style={{ borderColor: role?.border || "var(--adm-border-2)", color: role?.color || "var(--adm-muted)", background: role?.bg || "oklch(1 0 0 / 0.04)" }}
     >
       <Icon size={size === "sm" ? 11 : 13} />
-      {role?.labelShort || roleId}
+      {role?.label_short || roleId}
     </span>
   );
 }
@@ -520,8 +439,7 @@ function RoleBadge({ roleId, size = "sm", roles }) {
 /* ─── ROLE DROPDOWN ──────────────────────────────────────────────────────── */
 function RoleDropdown({ user, onSelect, onClose, triggerRef, roles }) {
   const ref = useRef(null);
-  const allRoles = roles || loadRoles();
-  const currentRoleId = normalizeRole(user, allRoles);
+  const currentRoleId = normalizeRole(user, roles);
 
   useEffect(() => {
     const handler = (e) => {
@@ -556,7 +474,7 @@ function RoleDropdown({ user, onSelect, onClose, triggerRef, roles }) {
 
       <div style={{ padding: "10px 14px 0" }}>
         <div className="adm-hierarchy-bar">
-          {[...allRoles].sort((a,b) => b.level - a.level).map(r => (
+          {[...roles].sort((a,b) => b.level - a.level).map(r => (
             <div
               key={r.id}
               className="adm-hierarchy-seg"
@@ -565,17 +483,17 @@ function RoleDropdown({ user, onSelect, onClose, triggerRef, roles }) {
                 color: r.id === currentRoleId ? r.color : "var(--adm-muted-2)",
               }}
             >
-              {r.labelShort}
+              {r.label_short}
             </div>
           ))}
         </div>
       </div>
 
-      {allRoles.map(role => {
+      {roles.map(role => {
         const isCurrent = role.id === currentRoleId;
         const IconName = role.icon || "User";
         const Icon = getIconComponent(IconName);
-        
+
         return (
           <div
             key={role.id}
@@ -602,7 +520,7 @@ function RoleDropdown({ user, onSelect, onClose, triggerRef, roles }) {
                     მიმდინარე
                   </span>
                 )}
-                {role.isDefault && (
+                {role.is_default && (
                   <span style={{
                     fontSize: 8, padding: "1px 5px", borderRadius: 4,
                     background: "oklch(0.72 0.22 5 / 0.1)", color: "var(--adm-pink)",
@@ -627,36 +545,29 @@ function RoleDropdown({ user, onSelect, onClose, triggerRef, roles }) {
 }
 
 /* ─── ROLE MANAGER ───────────────────────────────────────────────────────── */
-function RoleManager({ roles, setRoles, adminUser }) {
+function RoleManager({ roles, reloadRoles }) {
   const [showManager, setShowManager] = useState(false);
   const [editingRole, setEditingRole] = useState(null);
+  const [saving, setSaving] = useState(false);
   const [newRole, setNewRole] = useState({
-    id: "",
-    label: "",
-    labelShort: "",
-    color: "#ff2d78",
-    level: 1,
-    description: "",
-    duties: "",
-    canGrant: [],
-    icon: "User",
+    id: "", label: "", labelShort: "", color: "#ff2d78", level: 1,
+    description: "", duties: "", canGrant: [], icon: "User",
   });
   const [isEditing, setIsEditing] = useState(false);
 
   const iconOptions = ["User", "Shield", "Star", "Crown", "Swords", "UserCheck", "Briefcase", "Award", "Sparkles"];
 
-  const handleAddRole = () => {
-    if (!newRole.id || !newRole.label) {
-      alert("გთხოვთ შეავსოთ ID და Label");
-      return;
-    }
-    if (roles.find(r => r.id === newRole.id)) {
-      alert("ეს ID უკვე გამოიყენება");
-      return;
-    }
+  const resetForm = () => setNewRole({
+    id: "", label: "", labelShort: "", color: "#ff2d78", level: 1,
+    description: "", duties: "", canGrant: [], icon: "User",
+  });
 
+  const handleAddRole = async () => {
+    if (!newRole.id || !newRole.label) { alert("გთხოვთ შეავსოთ ID და Label"); return; }
+    if (roles.find(r => r.id === newRole.id)) { alert("ეს ID უკვე გამოიყენება"); return; }
+
+    setSaving(true);
     const levelNum = parseInt(newRole.level) || 1;
-    
     const roleToAdd = {
       id: newRole.id,
       label: newRole.label,
@@ -671,24 +582,14 @@ function RoleManager({ roles, setRoles, adminUser }) {
       bg: "oklch(0.72 0.22 5 / 0.1)",
       border: "oklch(0.72 0.22 5 / 0.3)",
       badgeClass: "adm-badge-pink",
-      isDefault: false,
     };
 
-    const updated = [...roles, roleToAdd];
-    setRoles(updated);
-    saveRoles(updated);
-    
-    setNewRole({
-      id: "",
-      label: "",
-      labelShort: "",
-      color: "#ff2d78",
-      level: 1,
-      description: "",
-      duties: "",
-      canGrant: [],
-      icon: "User",
-    });
+    const error = await persistNewRole(roleToAdd);
+    setSaving(false);
+    if (error) { alert("❌ როლის დამატება ვერ მოხერხდა"); console.error(error); return; }
+
+    await reloadRoles();
+    resetForm();
     setIsEditing(false);
     setShowManager(false);
     alert(`✅ როლი "${roleToAdd.label}" წარმატებით დაემატა!`);
@@ -696,78 +597,55 @@ function RoleManager({ roles, setRoles, adminUser }) {
 
   const handleEditRole = (roleId) => {
     const role = roles.find(r => r.id === roleId);
-    if (!role || role.isDefault) {
-      alert("სტანდარტული როლის რედაქტირება არ შეიძლება");
-      return;
-    }
+    if (!role || role.is_default) { alert("სტანდარტული როლის რედაქტირება არ შეიძლება"); return; }
     setEditingRole(roleId);
     setNewRole({
       id: role.id,
       label: role.label,
-      labelShort: role.labelShort || "",
+      labelShort: role.label_short || "",
       color: role.color,
       level: role.level,
       description: role.description || "",
       duties: role.duties || "",
-      canGrant: role.canGrant || [],
+      canGrant: role.can_grant || [],
       icon: typeof role.icon === 'string' ? role.icon : "User",
     });
     setIsEditing(true);
     setShowManager(true);
   };
 
-  const handleUpdateRole = () => {
-    if (!newRole.id || !newRole.label) {
-      alert("გთხოვთ შეავსოთ ID და Label");
-      return;
-    }
-
+  const handleUpdateRole = async () => {
+    if (!newRole.id || !newRole.label) { alert("გთხოვთ შეავსოთ ID და Label"); return; }
+    setSaving(true);
     const levelNum = parseInt(newRole.level) || 1;
-    
-    const updated = roles.map(r => {
-      if (r.id === editingRole) {
-        return {
-          ...r,
-          label: newRole.label,
-          labelShort: newRole.labelShort || newRole.label.toUpperCase().slice(0, 6),
-          color: newRole.color,
-          level: levelNum,
-          description: newRole.description,
-          duties: newRole.duties,
-          canGrant: newRole.canGrant || [],
-          icon: newRole.icon || "User",
-        };
-      }
-      return r;
+    const error = await persistRoleUpdate(editingRole, {
+      label: newRole.label,
+      labelShort: newRole.labelShort || newRole.label.toUpperCase().slice(0, 6),
+      color: newRole.color,
+      level: levelNum,
+      description: newRole.description,
+      duties: newRole.duties,
+      canGrant: newRole.canGrant || [],
+      icon: newRole.icon || "User",
     });
-    setRoles(updated);
-    saveRoles(updated);
+    setSaving(false);
+    if (error) { alert("❌ როლის განახლება ვერ მოხერხდა"); console.error(error); return; }
+
+    await reloadRoles();
     setEditingRole(null);
-    setNewRole({
-      id: "",
-      label: "",
-      labelShort: "",
-      color: "#ff2d78",
-      level: 1,
-      description: "",
-      duties: "",
-      canGrant: [],
-      icon: "User",
-    });
+    resetForm();
     setIsEditing(false);
     setShowManager(false);
   };
 
-  const handleDeleteRole = (roleId) => {
+  const handleDeleteRole = async (roleId) => {
     const role = roles.find(r => r.id === roleId);
-    if (!role || role.isDefault) {
-      return;
-    }
+    if (!role || role.is_default) return;
     if (!window.confirm(`დარწმუნებული ხარ, რომ გინდა "${role.label}" როლის წაშლა?`)) return;
 
-    const updated = roles.filter(r => r.id !== roleId);
-    setRoles(updated);
-    saveRoles(updated);
+    const error = await persistRoleDelete(roleId);
+    if (error) { alert("❌ როლის წაშლა ვერ მოხერხდა"); console.error(error); return; }
+    await reloadRoles();
   };
 
   if (!showManager) {
@@ -789,7 +667,7 @@ function RoleManager({ roles, setRoles, adminUser }) {
             {isEditing ? "როლის რედაქტირება" : "ახალი როლის დამატება"}
           </span>
         </div>
-        <button onClick={() => { setShowManager(false); setIsEditing(false); setEditingRole(null); }} className="adm-btn adm-btn-ghost adm-btn-sm">
+        <button onClick={() => { setShowManager(false); setIsEditing(false); setEditingRole(null); resetForm(); }} className="adm-btn adm-btn-ghost adm-btn-sm">
           <X size={14}/> დახურვა
         </button>
       </div>
@@ -797,58 +675,58 @@ function RoleManager({ roles, setRoles, adminUser }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12, marginBottom: 16 }}>
         <div>
           <label className="adm-label">როლის ID *</label>
-          <input 
-            className="adm-input" 
-            value={newRole.id} 
-            onChange={e => setNewRole({...newRole, id: e.target.value})} 
-            placeholder="მაგ: mod" 
+          <input
+            className="adm-input"
+            value={newRole.id}
+            onChange={e => setNewRole({...newRole, id: e.target.value})}
+            placeholder="მაგ: mod"
             disabled={isEditing}
           />
         </div>
         <div>
           <label className="adm-label">სახელი *</label>
-          <input 
-            className="adm-input" 
-            value={newRole.label} 
-            onChange={e => setNewRole({...newRole, label: e.target.value})} 
+          <input
+            className="adm-input"
+            value={newRole.label}
+            onChange={e => setNewRole({...newRole, label: e.target.value})}
             placeholder="მაგ: მოდერატორი"
           />
         </div>
         <div>
           <label className="adm-label">მოკლე სახელი</label>
-          <input 
-            className="adm-input" 
-            value={newRole.labelShort} 
-            onChange={e => setNewRole({...newRole, labelShort: e.target.value})} 
-            placeholder="მაგ: MOD" 
+          <input
+            className="adm-input"
+            value={newRole.labelShort}
+            onChange={e => setNewRole({...newRole, labelShort: e.target.value})}
+            placeholder="მაგ: MOD"
             maxLength={10}
           />
         </div>
         <div>
           <label className="adm-label">დონე (level)</label>
-          <input 
-            className="adm-input" 
-            type="number" 
-            value={newRole.level} 
-            onChange={e => setNewRole({...newRole, level: parseInt(e.target.value) || 1})} 
-            min={1} 
+          <input
+            className="adm-input"
+            type="number"
+            value={newRole.level}
+            onChange={e => setNewRole({...newRole, level: parseInt(e.target.value) || 1})}
+            min={1}
             max={100}
           />
         </div>
         <div>
           <label className="adm-label">ფერი</label>
-          <input 
-            className="adm-color-picker" 
-            type="color" 
-            value={newRole.color} 
+          <input
+            className="adm-color-picker"
+            type="color"
+            value={newRole.color}
             onChange={e => setNewRole({...newRole, color: e.target.value})}
           />
         </div>
         <div>
           <label className="adm-label">ხატულა</label>
-          <select 
-            className="adm-input" 
-            value={newRole.icon} 
+          <select
+            className="adm-input"
+            value={newRole.icon}
             onChange={e => setNewRole({...newRole, icon: e.target.value})}
           >
             {iconOptions.map(icon => (
@@ -858,35 +736,35 @@ function RoleManager({ roles, setRoles, adminUser }) {
         </div>
         <div style={{ gridColumn: "span 2" }}>
           <label className="adm-label">აღწერა</label>
-          <input 
-            className="adm-input" 
-            value={newRole.description} 
-            onChange={e => setNewRole({...newRole, description: e.target.value})} 
+          <input
+            className="adm-input"
+            value={newRole.description}
+            onChange={e => setNewRole({...newRole, description: e.target.value})}
             placeholder="როლის აღწერა..."
           />
         </div>
         <div style={{ gridColumn: "span 2" }}>
           <label className="adm-label">მოვალეობები</label>
-          <input 
-            className="adm-input" 
-            value={newRole.duties} 
-            onChange={e => setNewRole({...newRole, duties: e.target.value})} 
+          <input
+            className="adm-input"
+            value={newRole.duties}
+            onChange={e => setNewRole({...newRole, duties: e.target.value})}
             placeholder="მოვალეობების აღწერა..."
           />
         </div>
       </div>
 
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginBottom: 16 }}>
-        <button onClick={() => { setShowManager(false); setIsEditing(false); setEditingRole(null); }} className="adm-btn adm-btn-ghost adm-btn-sm">
+        <button onClick={() => { setShowManager(false); setIsEditing(false); setEditingRole(null); resetForm(); }} className="adm-btn adm-btn-ghost adm-btn-sm">
           გაუქმება
         </button>
         {isEditing ? (
-          <button onClick={handleUpdateRole} className="adm-btn adm-btn-success adm-btn-sm">
-            <Save size={14}/> შენახვა
+          <button onClick={handleUpdateRole} disabled={saving} className="adm-btn adm-btn-success adm-btn-sm">
+            {saving ? <Loader2 size={14} className="adm-spin"/> : <><Save size={14}/> შენახვა</>}
           </button>
         ) : (
-          <button onClick={handleAddRole} className="adm-btn adm-btn-primary adm-btn-sm">
-            <Plus size={14}/> დამატება
+          <button onClick={handleAddRole} disabled={saving} className="adm-btn adm-btn-primary adm-btn-sm">
+            {saving ? <Loader2 size={14} className="adm-spin"/> : <><Plus size={14}/> დამატება</>}
           </button>
         )}
       </div>
@@ -896,7 +774,7 @@ function RoleManager({ roles, setRoles, adminUser }) {
           არსებული როლები
         </div>
         {roles.map(role => {
-          const displayLevel = typeof role.level === 'string' ? role.level : `Lv.${role.level}`;
+          const displayLevel = `Lv.${role.level}`;
           return (
             <div key={role.id} className="adm-role-item">
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -906,14 +784,14 @@ function RoleManager({ roles, setRoles, adminUser }) {
                 <span style={{ fontSize: 10, background: role.bg || "oklch(1 0 0 / 0.04)", color: role.color || "var(--adm-muted)", padding: "1px 6px", borderRadius: 4, fontWeight: 700 }}>
                   {displayLevel}
                 </span>
-                {role.isDefault && (
+                {role.is_default && (
                   <span style={{ fontSize: 8, padding: "1px 5px", borderRadius: 4, background: "oklch(0.72 0.22 5 / 0.1)", color: "var(--adm-pink)", fontWeight: 700 }}>
                     სტანდარტული
                   </span>
                 )}
               </div>
               <div className="adm-role-item-actions">
-                {!role.isDefault && (
+                {!role.is_default && (
                   <>
                     <button onClick={() => handleEditRole(role.id)} className="adm-btn adm-btn-ghost adm-btn-sm" style={{ padding: "4px 8px", fontSize: 10 }}>
                       <Edit2 size={12}/>
@@ -951,13 +829,6 @@ const CV_FIELD_LABELS = {
 };
 const CV_FIELD_ORDER = Object.keys(CV_FIELD_LABELS);
 
-const loadAdminUser = () => {
-  try {
-    const s = localStorage.getItem("grl_admin_user");
-    return s ? JSON.parse(s) : null;
-  } catch { return null; }
-};
-
 function getStatusBadge(verdict) {
   if (!verdict) return { label: "განხილვაში", className: "adm-badge-yellow", icon: Clock };
   if (verdict === "approved") return { label: "დადასტურდა", className: "adm-badge-green", icon: CheckCircle2 };
@@ -976,12 +847,55 @@ function AdminLogin({ onLogin }) {
     setErr(""); setLoading(true);
     try {
       const { data: { user }, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) { setErr("არასწორი ელ-ფოსტა ან პაროლი"); setLoading(false); return; }
+      if (error) { 
+        setErr("არასწორი ელ-ფოსტა ან პაროლი"); 
+        setLoading(false); 
+        return; 
+      }
 
       const { data: profile, error: profileError } = await supabase
-        .from('profiles').select('*').eq('id', user.id).single();
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .maybeSingle();
 
-      if (profileError || profile?.role !== 'admin') {
+      if (profileError || !profile) {
+        const username = user.user_metadata?.username || user.email?.split('@')[0] || 'User';
+        
+        const { data: newProfile, error: insertError } = await supabase
+          .from('profiles')
+          .insert({
+            id: user.id,
+            username: username,
+            role: 'admin',
+            is_admin: true,
+            avatar_bg: 'linear-gradient(135deg,#ff2d78,#8b00ff)',
+          })
+          .select()
+          .maybeSingle();
+
+        if (insertError) {
+          console.error("Insert error:", insertError);
+          setErr("პროფილის შექმნა ვერ მოხერხდა");
+          await supabase.auth.signOut();
+          setLoading(false);
+          return;
+        }
+
+        const adminUser = {
+          id: user.id,
+          username: newProfile?.username || user.email,
+          email: user.email,
+          role: newProfile?.role || 'admin',
+          isAdmin: true,
+          avatarBg: newProfile?.avatar_bg || "linear-gradient(135deg,#ff2d78,#8b00ff)",
+        };
+        onLogin(adminUser);
+        setLoading(false);
+        return;
+      }
+
+      if (!profile?.is_admin) {
         setErr("თქვენ არ გაქვთ ადმინისტრატორის უფლებები");
         await supabase.auth.signOut();
         setLoading(false);
@@ -992,13 +906,15 @@ function AdminLogin({ onLogin }) {
         id: user.id,
         username: profile.username || user.email,
         email: user.email,
-        role: 'admin',
+        role: profile.role || 'tec',
         isAdmin: true,
         avatarBg: profile.avatar_bg || "linear-gradient(135deg,#ff2d78,#8b00ff)",
       };
-      localStorage.setItem("grl_admin_user", JSON.stringify(adminUser));
       onLogin(adminUser);
-    } catch { setErr("დაფიქსირდა შეცდომა, სცადეთ თავიდან"); }
+    } catch (error) {
+      console.error("Login error:", error);
+      setErr("დაფიქსირდა შეცდომა, სცადეთ თავიდან");
+    }
     setLoading(false);
   };
 
@@ -1039,89 +955,85 @@ function AdminLogin({ onLogin }) {
   );
 }
 
-/* ─── USERS MANAGEMENT (Supabase) ────────────────────────────────────────── */
+/* ─── USERS MANAGEMENT ────────────────────────────────────────────────────── */
 function UsersManagement({ adminUser, setAdminUser, roles }) {
   const [users, setUsers] = useState([]);
   const [showUsers, setShowUsers] = useState(false);
   const [searchUser, setSearchUser] = useState("");
   const [loading, setLoading] = useState(false);
-  const [shownPasswords, setShownPasswords] = useState({});
-  const [editingPassword, setEditingPassword] = useState(null);
-  const [newPasswordVal, setNewPasswordVal] = useState("");
   const [roleDropdownUser, setRoleDropdownUser] = useState(null);
   const roleButtonRefs = useRef({});
-  const allRoles = roles || loadRoles();
 
-  const loadUsers = async () => {
+  const loadUsers = useCallback(async () => {
     try {
       setLoading(true);
-      
-      const { data: profiles, error: profilesError } = await supabase
+      const { data: profiles, error } = await supabase
         .from('profiles')
         .select('*')
         .order('registered_at', { ascending: false });
 
-      if (profilesError) throw profilesError;
+      if (error) throw error;
 
-      const usersWithEmail = await Promise.all(
-        profiles.map(async (profile) => {
-          const { data: authUser } = await supabase
-            .from('auth.users')
-            .select('email')
-            .eq('id', profile.id)
-            .single();
-          
-          return {
-            id: profile.id,
-            username: profile.username,
-            email: authUser?.email || 'N/A',
-            password: '••••••••',
-            role: profile.role || 'player',
-            isAdmin: profile.is_admin || false,
-            avatarBg: profile.avatar_bg || 'linear-gradient(135deg,#ec4899,#8b5cf6)',
-            registeredAt: profile.registered_at
-          };
-        })
-      );
-
-      setUsers(usersWithEmail);
+      setUsers((profiles || []).map(p => ({
+        id: p.id,
+        username: p.username,
+        email: p.email || 'N/A',
+        role: p.role || 'player',
+        isAdmin: p.is_admin || false,
+        avatarBg: p.avatar_bg || 'linear-gradient(135deg,#ec4899,#8b5cf6)',
+        registeredAt: p.registered_at,
+      })));
     } catch (error) {
       console.error('Error loading users from Supabase:', error);
-      try {
-        const s = localStorage.getItem("grl_users");
-        setUsers(s ? JSON.parse(s) : []);
-      } catch { setUsers([]); }
+      setUsers([]);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { 
-    if (showUsers) loadUsers(); 
-  }, [showUsers]);
+  useEffect(() => {
+    if (showUsers) loadUsers();
+  }, [showUsers, loadUsers]);
 
   useEffect(() => {
     if (!showUsers) return;
     
-    const subscription = supabase
-      .channel('profiles_changes')
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'profiles'
-      }, (payload) => {
+    const channel = supabase
+      .channel('admin_profiles_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, (payload) => {
         if (payload.eventType === 'INSERT') {
-          setUsers(prev => [payload.new, ...prev]);
+          const p = payload.new;
+          setUsers(prev => [{
+            id: p.id, username: p.username, email: p.email || 'N/A',
+            role: p.role || 'player', isAdmin: p.is_admin || false,
+            avatarBg: p.avatar_bg || 'linear-gradient(135deg,#ec4899,#8b5cf6)',
+            registeredAt: p.registered_at,
+          }, ...prev]);
         } else if (payload.eventType === 'UPDATE') {
-          setUsers(prev => prev.map(u => u.id === payload.new.id ? payload.new : u));
+          const p = payload.new;
+          setUsers(prev => prev.map(u => u.id === p.id ? {
+            ...u, username: p.username, email: p.email || u.email,
+            role: p.role || 'player', isAdmin: p.is_admin || false,
+            avatarBg: p.avatar_bg || u.avatarBg,
+          } : u));
+          // 🔥🔥🔥 REAL-TIME: Update adminUser if it's the current admin
+          if (p.id === adminUser?.id) {
+            setAdminUser(prev => prev ? {
+              ...prev,
+              role: p.role,
+              isAdmin: p.is_admin,
+              username: p.username,
+              avatarBg: p.avatar_bg || prev.avatarBg,
+            } : prev);
+          }
         } else if (payload.eventType === 'DELETE') {
           setUsers(prev => prev.filter(u => u.id !== payload.old.id));
         }
       })
       .subscribe();
 
-    return () => subscription.unsubscribe();
-  }, [showUsers]);
+    return () => { supabase.removeChannel(channel); };
+  }, [showUsers, adminUser?.id, setAdminUser]);
 
   useEffect(() => {
     const close = () => setRoleDropdownUser(null);
@@ -1134,89 +1046,65 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
     u.email?.toLowerCase().includes(searchUser.toLowerCase())
   );
 
-  const togglePasswordVisibility = (userId) =>
-    setShownPasswords(prev => ({ ...prev, [userId]: !prev[userId] }));
-
-  // 🔥 FIXED: Role selection with admin update
+  // 🔥🔥🔥 FIXED: THIS IS THE MAIN FIX FOR REFRESH PROBLEM!
   const handleRoleSelect = async (user, newRoleId) => {
-    const role = getRoleById(newRoleId, allRoles);
-    
-    try {
-      const { error } = await supabase
-        .from('profiles')
-        .update({ 
-          role: newRoleId, 
-          is_admin: role?.level >= 2 
-        })
-        .eq('id', user.id);
+  const role = getRoleById(newRoleId, roles);
+  const willBeAdmin = (role?.level ?? 0) >= 2;
 
-      if (error) throw error;
-
-      const updatedUsers = users.map(u => u.id !== user.id ? u : {
-        ...u,
+  try {
+    const { data: updated, error } = await supabase
+      .from('profiles')
+      .update({ 
         role: newRoleId,
-        isAdmin: role?.level >= 2,
-      });
-      setUsers(updatedUsers);
-      localStorage.setItem("grl_users", JSON.stringify(updatedUsers));
+        is_admin: willBeAdmin
+      })
+      .eq('id', user.id)
+      .select()
+      .maybeSingle(); // .single() → .maybeSingle()
 
-      // 🔥 IMPORTANT: Update adminUser if it's the current admin
-      if (user.id === adminUser?.id || user.username?.toLowerCase() === adminUser?.username?.toLowerCase()) {
-        const updatedAdmin = {
-          ...adminUser,
-          role: newRoleId,
-          isAdmin: role?.level >= 2,
-        };
-        localStorage.setItem("grl_admin_user", JSON.stringify(updatedAdmin));
-        
-        // Update adminUser state
-        if (setAdminUser) {
-          setAdminUser(updatedAdmin);
-        }
-        
-        console.log("✅ Admin role updated to:", newRoleId);
-      }
-      
-    } catch (error) {
-      console.error('Error updating role:', error);
-      alert('❌ როლის განახლება ვერ მოხერხდა');
+    if (error) {
+      console.error('Supabase error details:', error);
+      throw error;
     }
-    
-    setRoleDropdownUser(null);
-  };
+
+    if (!updated) {
+      console.error('No row returned — RLS შეიძლება ბლოკავს');
+      alert('❌ განახლება ვერ მოხდა — Supabase RLS policy შეამოწმე');
+      setRoleDropdownUser(null);
+      return;
+    }
+
+    setUsers(prev => prev.map(u => 
+      u.id === user.id 
+        ? { ...u, role: updated.role, isAdmin: updated.is_admin } 
+        : u
+    ));
+
+    if (user.id === adminUser?.id) {
+      setAdminUser(prev => prev ? {
+        ...prev,
+        role: updated.role,
+        isAdmin: updated.is_admin,
+      } : prev);
+    }
+
+  } catch (error) {
+    console.error('Full error:', JSON.stringify(error, null, 2));
+    alert('❌ როლის განახლება ვერ მოხერხდა: ' + error.message);
+  }
+
+  setRoleDropdownUser(null);
+};
 
   const deleteUser = async (userId) => {
     if (!window.confirm("დარწმუნებული ხარ?")) return;
-    
     try {
-      const { error } = await supabase
-        .from('profiles')
-        .delete()
-        .eq('id', userId);
-
+      const { error } = await supabase.from('profiles').delete().eq('id', userId);
       if (error) throw error;
-
-      const updated = users.filter(u => u.id !== userId);
-      setUsers(updated);
-      localStorage.setItem("grl_users", JSON.stringify(updated));
+      setUsers(prev => prev.filter(u => u.id !== userId));
     } catch (error) {
       console.error('Error deleting user:', error);
       alert('❌ მომხმარებლის წაშლა ვერ მოხერხდა');
-    }
-  };
-
-  const saveNewPassword = async (userId) => {
-    if (!newPasswordVal.trim()) return;
-    
-    try {
-      const updated = users.map(u => u.id !== userId ? u : { ...u, password: newPasswordVal });
-      setUsers(updated);
-      localStorage.setItem("grl_users", JSON.stringify(updated));
-      setEditingPassword(null);
-      setNewPasswordVal("");
-    } catch (error) {
-      console.error('Error updating password:', error);
-      alert('❌ პაროლის განახლება ვერ მოხერხდა');
     }
   };
 
@@ -1230,8 +1118,8 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
     );
   }
 
-  const roleCounts = allRoles.reduce((acc, r) => {
-    acc[r.id] = users.filter(u => normalizeRole(u, allRoles) === r.id).length;
+  const roleCounts = roles.reduce((acc, r) => {
+    acc[r.id] = users.filter(u => normalizeRole(u, roles) === r.id).length;
     return acc;
   }, {});
 
@@ -1243,9 +1131,9 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
           მომხმარებლების მართვა ({users.length})
         </div>
         <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-          {allRoles.map(r => (
+          {roles.map(r => (
             <span key={r.id} style={{ fontSize:11, color:r.color, fontWeight:700, fontFamily:"var(--adm-font-m)", opacity:roleCounts[r.id]===0?0.35:1 }}>
-              {r.labelShort}: {roleCounts[r.id]||0}
+              {r.label_short}: {roleCounts[r.id]||0}
             </span>
           ))}
           <button onClick={() => setShowUsers(false)} className="adm-btn adm-btn-ghost adm-btn-sm">
@@ -1274,8 +1162,8 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
             <thead style={{ background:"oklch(0.72 0.22 5 / 0.08)", position:"sticky", top:0, zIndex:1 }}>
               <tr>
-                {["მომხმარებელი","ელ-ფოსტა","პაროლი","როლი","მოქმედებები"].map((h,i) => (
-                  <th key={h} style={{ padding:"10px 14px", textAlign:i===4?"right":"left", fontWeight:700, color:"var(--adm-muted)", fontSize:10, textTransform:"uppercase", letterSpacing:"0.1em", borderBottom:"1px solid var(--adm-border-2)" }}>
+                {["მომხმარებელი","ელ-ფოსტა","როლი","მოქმედებები"].map((h,i) => (
+                  <th key={h} style={{ padding:"10px 14px", textAlign:i===3?"right":"left", fontWeight:700, color:"var(--adm-muted)", fontSize:10, textTransform:"uppercase", letterSpacing:"0.1em", borderBottom:"1px solid var(--adm-border-2)" }}>
                     {h}
                   </th>
                 ))}
@@ -1283,14 +1171,11 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
             </thead>
             <tbody>
               {filteredUsers.length === 0 ? (
-                <tr><td colSpan={5} className="adm-empty">მომხმარებლები არ მოიძებნა</td></tr>
+                <tr><td colSpan={4} className="adm-empty">მომხმარებლები არ მოიძებნა</td></tr>
               ) : filteredUsers.map(user => {
-                const isSelf = user.id === adminUser?.id ||
-                  user.username?.toLowerCase() === adminUser?.username?.toLowerCase();
-                const userRoleId = normalizeRole(user, allRoles);
-                const userRole = getRoleById(userRoleId, allRoles);
-                const pwVisible = shownPasswords[user.id];
-                const isEditingPw = editingPassword === user.id;
+                const isSelf = user.id === adminUser?.id;
+                const userRoleId = normalizeRole(user, roles);
+                const userRole = getRoleById(userRoleId, roles);
                 const isRoleOpen = roleDropdownUser?.id === user.id;
 
                 return (
@@ -1308,34 +1193,7 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
                     <td style={{ padding:"10px 14px", color:"var(--adm-muted)" }}>{user.email}</td>
 
                     <td style={{ padding:"10px 14px" }}>
-                      {isEditingPw ? (
-                        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                          <input
-                            autoFocus
-                            type="text"
-                            value={newPasswordVal}
-                            onChange={e => setNewPasswordVal(e.target.value)}
-                            onKeyDown={e => { if(e.key==="Enter") saveNewPassword(user.id); if(e.key==="Escape"){setEditingPassword(null);setNewPasswordVal("");} }}
-                            placeholder="ახალი პაროლი"
-                            style={{ background:"oklch(0.12 0.02 285 / 0.6)", border:"1px solid oklch(0.72 0.22 5 / 0.4)", borderRadius:6, padding:"4px 8px", color:"var(--adm-text)", fontSize:12, outline:"none", width:110, fontFamily:"var(--adm-font-m)" }}
-                          />
-                          <button onClick={() => saveNewPassword(user.id)} className="adm-btn adm-btn-success adm-btn-sm" style={{ padding:"4px 8px" }}><Check size={12}/></button>
-                          <button onClick={() => {setEditingPassword(null);setNewPasswordVal("");}} className="adm-btn adm-btn-ghost adm-btn-sm" style={{ padding:"4px 8px" }}><X size={12}/></button>
-                        </div>
-                      ) : (
-                        <div style={{ display:"flex", alignItems:"center", gap:6, fontFamily:"var(--adm-font-m)", fontSize:12 }}>
-                          <span style={{ color:pwVisible?"var(--adm-yellow)":"var(--adm-muted-2)", letterSpacing:pwVisible?"normal":2 }}>
-                            {pwVisible ? (user.password||"—") : "••••••••"}
-                          </span>
-                          <button onClick={() => togglePasswordVisibility(user.id)} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--adm-muted-2)", padding:2, display:"flex", alignItems:"center" }}>
-                            {pwVisible ? <EyeOff size={13}/> : <EyeIcon size={13}/>}
-                          </button>
-                        </div>
-                      )}
-                    </td>
-
-                    <td style={{ padding:"10px 14px" }}>
-                      <RoleBadge roleId={userRoleId} roles={allRoles}/>
+                      <RoleBadge roleId={userRoleId} roles={roles}/>
                     </td>
 
                     <td style={{ padding:"10px 14px", textAlign:"right" }}>
@@ -1361,15 +1219,6 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
                             <ChevronDown size={11} style={{ transition:"transform .2s", transform:isRoleOpen?"rotate(180deg)":"none" }}/>
                           </button>
 
-                          <button
-                            onClick={() => { setEditingPassword(user.id); setNewPasswordVal(user.password||""); }}
-                            className="adm-btn adm-btn-sm"
-                            style={{ background:"oklch(0.82 0.16 80 / 0.12)", color:"var(--adm-yellow)", border:"1px solid oklch(0.82 0.16 80 / 0.3)" }}
-                            title="პაროლის შეცვლა"
-                          >
-                            <Lock size={12}/>
-                          </button>
-
                           <button onClick={() => deleteUser(user.id)} className="adm-btn adm-btn-danger adm-btn-sm" title="წაშლა">
                             <Trash2 size={12}/>
                           </button>
@@ -1380,7 +1229,7 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
                               onSelect={handleRoleSelect}
                               onClose={() => setRoleDropdownUser(null)}
                               triggerRef={{ current: roleButtonRefs.current[user.id] }}
-                              roles={allRoles}
+                              roles={roles}
                             />
                           )}
                         </div>
@@ -1397,9 +1246,9 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
       <div style={{ padding:"11px 18px", borderTop:"1px solid var(--adm-border-2)", display:"flex", justifyContent:"space-between", fontSize:12, color:"var(--adm-muted)" }}>
         <span>სულ: {users.length} მომხმარებელი</span>
         <div style={{ display:"flex", gap:12 }}>
-          {allRoles.filter(r=>r.id!=="player").map(r=>(
+          {roles.filter(r=>r.id!=="player").map(r=>(
             <span key={r.id} style={{ color:r.color }}>
-              {r.labelShort}: {roleCounts[r.id]||0}
+              {r.label_short}: {roleCounts[r.id]||0}
             </span>
           ))}
         </div>
@@ -1428,29 +1277,28 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
   const statusInfo = getStatusBadge(status);
   const StatusIcon = statusInfo.icon;
 
-  const submitVerdict = () => {
+  const submitVerdict = async () => {
     if (!verdictMode) return;
     setSaving(true);
-    const isApproved = verdictMode === "approved";
-    onVerdict(cv.id, verdictMode, reason, isApproved);
-    setVerdictMode(null); 
-    setReason(""); 
+    await onVerdict(cv.id, verdictMode, reason, verdictMode === "approved");
+    setVerdictMode(null);
+    setReason("");
     setSaving(false);
   };
 
-  const submitReply = () => {
+  const submitReply = async () => {
     if (!replyText.trim()) return;
     setSaving(true);
-    onReply(cv.id, replyText);
-    setReplyText(""); 
-    setReplyOpen(false); 
+    await onReply(cv.id, replyText);
+    setReplyText("");
+    setReplyOpen(false);
     setSaving(false);
   };
 
-  const handleEditReply = () => {
+  const handleEditReply = async () => {
     if (!editReplyText.trim()) return;
     setSaving(true);
-    onEditReply(cv.id, editReplyText);
+    await onEditReply(cv.id, editReplyText);
     setIsEditingReply(false);
     setSaving(false);
   };
@@ -1480,7 +1328,7 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
           )}
           <span className={`adm-badge ${statusInfo.className}`}><StatusIcon size={11}/> {statusInfo.label}</span>
           <span style={{ fontSize:11, color:"var(--adm-muted-2)" }}>
-            {new Date(cv.submitted_at).toLocaleString("ka-GE")}
+            {cv.submitted_at ? new Date(cv.submitted_at).toLocaleString("ka-GE") : ""}
           </span>
         </div>
       </div>
@@ -1530,12 +1378,9 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
               </span>
             </div>
             <div style={{ display:"flex", gap:4 }}>
-              <button 
-                onClick={() => {
-                  setIsEditingReply(true);
-                  setEditReplyText(cv.admin_reply);
-                }} 
-                className="adm-btn adm-btn-ghost adm-btn-sm" 
+              <button
+                onClick={() => { setIsEditingReply(true); setEditReplyText(cv.admin_reply); }}
+                className="adm-btn adm-btn-ghost adm-btn-sm"
                 style={{ padding:"4px 8px", fontSize:"10px" }}
                 title="პასუხის რედაქტირება"
               >
@@ -1543,12 +1388,12 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
               </button>
             </div>
           </div>
-          
+
           {isEditingReply ? (
             <div>
-              <textarea 
-                className="adm-edit-textarea" 
-                value={editReplyText} 
+              <textarea
+                className="adm-edit-textarea"
+                value={editReplyText}
                 onChange={e => setEditReplyText(e.target.value)}
                 style={{ marginBottom: 8 }}
                 autoFocus
@@ -1593,14 +1438,14 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
             <button onClick={()=>setReplyOpen(o=>!o)} className="adm-btn adm-btn-ghost adm-btn-sm">
               <MessageSquare size={13}/> პასუხი
             </button>
-            
+
             {!status && (
-              <button 
+              <button
                 onClick={() => {
                   if (window.confirm("დარწმუნებული ხარ? ვაკანსია დაიხურება და აღარ მიიღება CV-ები.")) {
                     onClose(cv.id);
                   }
-                }} 
+                }}
                 className="adm-btn adm-btn-danger adm-btn-sm"
               >
                 <Lock size={13}/> ვაკანსიის დახურვა
@@ -1637,44 +1482,36 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
   );
 }
 
-/* ─── CVs SECTION (Supabase) ────────────────────────────────────────────── */
-function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply }) {
+/* ─── CVs SECTION ────────────────────────────────────────────────────────── */
+function CVsSection({ adminUser, onCloseVacancy }) {
   const [cvs, setCvs] = useState([]);
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
 
-  const loadCVs = async () => {
+  const loadCVs = useCallback(async () => {
     try {
       setLoading(true);
       const { data, error } = await supabase
         .from('forum_cvs')
         .select('*')
         .order('created_at', { ascending: false });
-
       if (error) throw error;
       setCvs(data || []);
     } catch (error) {
       console.error('Error loading CVs from Supabase:', error);
-      try {
-        const s = localStorage.getItem("grl_cvs");
-        setCvs(s ? JSON.parse(s) : []);
-      } catch { setCvs([]); }
+      setCvs([]);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadCVs();
 
-    const subscription = supabase
-      .channel('forum_cvs_changes')
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'forum_cvs'
-      }, (payload) => {
+    const channel = supabase
+      .channel('forum_cvs_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'forum_cvs' }, (payload) => {
         if (payload.eventType === 'INSERT') {
           setCvs(prev => [payload.new, ...prev]);
         } else if (payload.eventType === 'UPDATE') {
@@ -1685,8 +1522,8 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
       })
       .subscribe();
 
-    return () => subscription.unsubscribe();
-  }, []);
+    return () => { supabase.removeChannel(channel); };
+  }, [loadCVs]);
 
   const counts = {
     all: cvs.length,
@@ -1704,12 +1541,60 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
     if (filter === "hired" && !c.hired) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
-      return c.author?.toLowerCase().includes(q) || 
+      return c.author?.toLowerCase().includes(q) ||
              c.vacancy_title?.toLowerCase().includes(q) ||
              c.full_name?.toLowerCase().includes(q);
     }
     return true;
   });
+
+  const handleVerdict = async (cvId, verdict, reason, shouldCloseVacancy) => {
+    try {
+      const { error } = await supabase
+        .from('forum_cvs')
+        .update({ status: verdict, status_reason: reason })
+        .eq('id', cvId);
+      if (error) throw error;
+
+      setCvs(prev => prev.map(c => c.id === cvId ? { ...c, status: verdict, status_reason: reason } : c));
+
+      if (shouldCloseVacancy) {
+        const cv = cvs.find(c => c.id === cvId);
+        if (cv?.thread_id) await onCloseVacancy(cv.thread_id, cvId);
+      }
+    } catch (error) {
+      console.error('Error updating CV verdict:', error);
+      alert('❌ გადაწყვეტილების შენახვა ვერ მოხერხდა');
+    }
+  };
+
+  const handleReply = async (cvId, text) => {
+    try {
+      const { error } = await supabase
+        .from('forum_cvs')
+        .update({ admin_reply: text, admin_reply_date: new Date().toISOString() })
+        .eq('id', cvId);
+      if (error) throw error;
+      setCvs(prev => prev.map(c => c.id === cvId ? { ...c, admin_reply: text, admin_reply_date: new Date().toISOString() } : c));
+    } catch (error) {
+      console.error('Error adding reply:', error);
+      alert('❌ პასუხის გაგზავნა ვერ მოხერხდა');
+    }
+  };
+
+  const handleClose = async (cvId) => {
+    try {
+      const { error } = await supabase.from('forum_cvs').update({ vacancy_closed: true }).eq('id', cvId);
+      if (error) throw error;
+      setCvs(prev => prev.map(c => c.id === cvId ? { ...c, vacancy_closed: true } : c));
+
+      const cv = cvs.find(c => c.id === cvId);
+      if (cv?.thread_id) await onCloseVacancy(cv.thread_id, cvId);
+    } catch (error) {
+      console.error('Error closing vacancy:', error);
+      alert('❌ ვაკანსიის დახურვა ვერ მოხერხდა');
+    }
+  };
 
   return (
     <div className="adm-fade">
@@ -1721,7 +1606,7 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
           { id:"rejected", label:"უარყოფილი", val:counts.rejected, color:"var(--adm-red)" },
           { id:"hired", label:"აყვანილი", val:counts.hired, color:"#ff2d78" },
         ].map(s => (
-          <div key={s.id} className="adm-stat-card" onClick={() => setFilter(s.id)} 
+          <div key={s.id} className="adm-stat-card" onClick={() => setFilter(s.id)}
             style={{ cursor:"pointer", borderColor:filter===s.id?`color-mix(in oklab, ${s.color} 60%, transparent)`:"var(--adm-border)", background:filter===s.id?`color-mix(in oklab, ${s.color} 10%, var(--adm-card))`:"var(--adm-card)" }}>
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
               <div style={{ color:s.color }}>{/* icon placeholder */}</div>
@@ -1756,99 +1641,14 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
       ) : (
         <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
           {filteredCVs.map(cv => (
-            <CVCard 
-              key={cv.id} 
-              cv={cv} 
+            <CVCard
+              key={cv.id}
+              cv={cv}
               adminUser={adminUser}
-              onVerdict={async (cvId, verdict, reason, shouldCloseVacancy) => {
-                try {
-                  const { error } = await supabase
-                    .from('forum_cvs')
-                    .update({ 
-                      status: verdict, 
-                      status_reason: reason 
-                    })
-                    .eq('id', cvId);
-
-                  if (error) throw error;
-
-                  setCvs(prev => prev.map(c => 
-                    c.id === cvId ? { ...c, status: verdict, status_reason: reason } : c
-                  ));
-                  
-                  if (shouldCloseVacancy) {
-                    const cv = cvs.find(c => c.id === cvId);
-                    if (cv && cv.thread_id) {
-                      onCloseVacancy(cv.thread_id, cvId);
-                    }
-                  }
-                } catch (error) {
-                  console.error('Error updating CV verdict:', error);
-                  alert('❌ გადაწყვეტილების შენახვა ვერ მოხერხდა');
-                }
-              }}
-              onReply={async (cvId, text) => {
-                try {
-                  const { error } = await supabase
-                    .from('forum_cvs')
-                    .update({ 
-                      admin_reply: text, 
-                      admin_reply_date: new Date() 
-                    })
-                    .eq('id', cvId);
-
-                  if (error) throw error;
-
-                  setCvs(prev => prev.map(c => 
-                    c.id === cvId ? { ...c, admin_reply: text, admin_reply_date: new Date() } : c
-                  ));
-                } catch (error) {
-                  console.error('Error adding reply:', error);
-                  alert('❌ პასუხის გაგზავნა ვერ მოხერხდა');
-                }
-              }}
-              onEditReply={async (cvId, text) => {
-                try {
-                  const { error } = await supabase
-                    .from('forum_cvs')
-                    .update({ 
-                      admin_reply: text, 
-                      admin_reply_date: new Date() 
-                    })
-                    .eq('id', cvId);
-
-                  if (error) throw error;
-
-                  setCvs(prev => prev.map(c => 
-                    c.id === cvId ? { ...c, admin_reply: text, admin_reply_date: new Date() } : c
-                  ));
-                } catch (error) {
-                  console.error('Error editing reply:', error);
-                  alert('❌ პასუხის რედაქტირება ვერ მოხერხდა');
-                }
-              }}
-              onClose={async (cvId) => {
-                try {
-                  const { error } = await supabase
-                    .from('forum_cvs')
-                    .update({ vacancy_closed: true })
-                    .eq('id', cvId);
-
-                  if (error) throw error;
-
-                  setCvs(prev => prev.map(c => 
-                    c.id === cvId ? { ...c, vacancy_closed: true } : c
-                  ));
-                  
-                  const cv = cvs.find(c => c.id === cvId);
-                  if (cv && cv.thread_id) {
-                    onCloseVacancy(cv.thread_id, cvId);
-                  }
-                } catch (error) {
-                  console.error('Error closing vacancy:', error);
-                  alert('❌ ვაკანსიის დახურვა ვერ მოხერხდა');
-                }
-              }}
+              onVerdict={handleVerdict}
+              onReply={handleReply}
+              onEditReply={handleReply}
+              onClose={handleClose}
             />
           ))}
         </div>
@@ -1861,7 +1661,8 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
 export default function AdminPanel() {
   useEffect(() => { injectAdminStyles(); }, []);
 
-  const [adminUser, setAdminUser] = useState(loadAdminUser);
+  const [adminUser, setAdminUser] = useState(null);
+  const [adminLoading, setAdminLoading] = useState(true);
   const [threads, setThreads] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeSection, setActiveSection] = useState("complaints");
@@ -1872,106 +1673,191 @@ export default function AdminPanel() {
   const [reason, setReason] = useState("");
   const [reply, setReply] = useState("");
   const [saving, setSaving] = useState(false);
-  const [roles, setRoles] = useState(loadRoles);
+  const [roles, setRoles] = useState([]);
   const [cvsCount, setCvsCount] = useState(0);
 
-  // ─── Load CV Count ──────────────────────────────────────────────────────
+  const reloadRoles = useCallback(async () => {
+    setRoles(await fetchRoles());
+  }, []);
+
+  // ─── Load admin from Supabase Auth ──────────────────────────────────────
   useEffect(() => {
-    const loadCVCount = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('forum_cvs')
-          .select('*', { count: 'exact', head: true });
-        
-        if (error) throw error;
-        setCvsCount(data?.length || 0);
-      } catch (error) {
-        console.error('Error loading CV count:', error);
-        try {
-          const cvs = JSON.parse(localStorage.getItem("grl_cvs") || "[]");
-          setCvsCount(cvs.length);
-        } catch { setCvsCount(0); }
+    const loadAdmin = async () => {
+      setAdminLoading(true);
+      
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) { 
+        setAdminUser(null); 
+        setAdminLoading(false); 
+        return; 
       }
+
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', session.user.id)
+        .maybeSingle();
+
+      if (error || !profile?.is_admin) {
+        setAdminUser(null);
+        setAdminLoading(false);
+        return;
+      }
+
+      const adminData = {
+        id: session.user.id,
+        username: profile.username || session.user.email,
+        email: session.user.email,
+        role: profile.role || 'tec',
+        isAdmin: profile.is_admin || false,
+        avatarBg: profile.avatar_bg || "linear-gradient(135deg,#ff2d78,#8b00ff)",
+      };
+      
+      console.log("✅ Admin loaded with role:", adminData.role);
+      setAdminUser(adminData);
+      setAdminLoading(false);
     };
-    
-    loadCVCount();
 
-    const subscription = supabase
-      .channel('forum_cvs_count')
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'forum_cvs'
-      }, () => {
-        loadCVCount();
-      })
-      .subscribe();
+    loadAdmin();
 
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') setAdminUser(null);
+    });
     return () => subscription.unsubscribe();
   }, []);
 
-  // ─── Load Threads from Supabase ──────────────────────────────────────────
-  const loadThreads = async () => {
+  // 🔥 REAL-TIME: Admin's own profile changes reflected immediately
+  useEffect(() => {
+    if (!adminUser?.id) return;
+    
+    const channel = supabase
+      .channel(`admin_self_profile_${adminUser.id}`)
+      .on('postgres_changes', { 
+        event: 'UPDATE', 
+        schema: 'public', 
+        table: 'profiles', 
+        filter: `id=eq.${adminUser.id}` 
+      }, (payload) => {
+        console.log("🔄 Admin profile updated in real-time:", payload.new.role);
+        setAdminUser(prev => prev ? {
+          ...prev,
+          role: payload.new.role,
+          isAdmin: payload.new.is_admin,
+          avatarBg: payload.new.avatar_bg || prev.avatarBg,
+          username: payload.new.username || prev.username,
+        } : prev);
+      })
+      .subscribe();
+      
+    return () => { supabase.removeChannel(channel); };
+  }, [adminUser?.id]);
+
+  useEffect(() => { reloadRoles(); }, [reloadRoles]);
+
+  // ─── CV count ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    const loadCVCount = async () => {
+      const { count } = await supabase.from('forum_cvs').select('*', { count: 'exact', head: true });
+      setCvsCount(count || 0);
+    };
+    loadCVCount();
+
+    const channel = supabase
+      .channel('forum_cvs_count_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'forum_cvs' }, loadCVCount)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  // ─── Threads + posts ────────────────────────────────────────────────────
+  const loadThreads = useCallback(async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase
+      const { data: threadRows, error: threadError } = await supabase
         .from('forum_threads')
         .select('*')
         .order('created_at', { ascending: false });
+      if (threadError) throw threadError;
 
-      if (error) throw error;
-      setThreads(data || []);
+      const { data: postRows, error: postError } = await supabase
+        .from('forum_posts')
+        .select('*')
+        .order('created_at', { ascending: true });
+      if (postError) throw postError;
+
+      const postsByThread = {};
+      (postRows || []).forEach(p => {
+        if (!postsByThread[p.thread_id]) postsByThread[p.thread_id] = [];
+        postsByThread[p.thread_id].push(p);
+      });
+
+      setThreads((threadRows || []).map(t => ({ ...t, posts: postsByThread[t.id] || [] })));
     } catch (error) {
       console.error('Error loading threads from Supabase:', error);
-      try { 
-        const s = localStorage.getItem("grl_threads"); 
-        setThreads(s ? JSON.parse(s) : []); 
-      } catch { setThreads([]); }
+      setThreads([]);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { loadThreads(); }, []);
-
-  // Real-time threads updates
   useEffect(() => {
-    const subscription = supabase
-      .channel('forum_threads_changes')
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'forum_threads'
-      }, (payload) => {
-        if (payload.eventType === 'INSERT') {
-          setThreads(prev => [payload.new, ...prev]);
-        } else if (payload.eventType === 'UPDATE') {
-          setThreads(prev => prev.map(t => t.id === payload.new.id ? payload.new : t));
-        } else if (payload.eventType === 'DELETE') {
+    if (adminUser) loadThreads();
+  }, [adminUser, loadThreads]);
+
+  // 🔥 REAL-TIME: Threads + posts live for everyone
+  useEffect(() => {
+    if (!adminUser) return;
+
+    const channel = supabase
+      .channel('admin_forum_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'forum_threads' }, (payload) => {
+        if (payload.eventType === 'DELETE') {
           setThreads(prev => prev.filter(t => t.id !== payload.old.id));
+        } else {
+          setThreads(prev => {
+            const exists = prev.some(t => t.id === payload.new.id);
+            if (exists) return prev.map(t => t.id === payload.new.id ? { ...t, ...payload.new, posts: t.posts } : t);
+            return [{ ...payload.new, posts: [] }, ...prev];
+          });
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'forum_posts' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setThreads(prev => prev.map(t => t.id === payload.new.thread_id
+            ? { ...t, posts: [...(t.posts || []), payload.new] }
+            : t));
+        } else if (payload.eventType === 'DELETE') {
+          setThreads(prev => prev.map(t => t.id === payload.old.thread_id
+            ? { ...t, posts: (t.posts || []).filter(p => p.id !== payload.old.id) }
+            : t));
         }
       })
       .subscribe();
 
-    return () => subscription.unsubscribe();
-  }, []);
+    return () => { supabase.removeChannel(channel); };
+  }, [adminUser]);
 
-  useEffect(() => {
-    const handleStorage = () => setRoles(loadRoles());
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
-  }, []);
+  if (adminLoading) {
+    return (
+      <div className="adm-root" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+        <div className="adm-empty" style={{ padding: 60 }}>
+          <Loader2 size={48} className="adm-spin"/>
+          <div style={{ marginTop: 16, fontSize: 16 }}>იტვირთება...</div>
+        </div>
+      </div>
+    );
+  }
 
   if (!adminUser) return <AdminLogin onLogin={u => setAdminUser(u)}/>;
 
   const complaints = threads.filter(t => COMPLAINT_IDS.includes(t.subforum_id));
   const filtered = complaints.filter(t => {
-    if (filter !== "all") { 
-      const s = t.verdict || "pending"; 
-      if (s !== filter) return false; 
+    if (filter !== "all") {
+      const s = t.verdict || "pending";
+      if (s !== filter) return false;
     }
     if (search.trim()) {
-      return t.title?.toLowerCase().includes(search.toLowerCase()) || 
+      return t.title?.toLowerCase().includes(search.toLowerCase()) ||
              t.author?.toLowerCase().includes(search.toLowerCase());
     }
     return true;
@@ -1984,40 +1870,35 @@ export default function AdminPanel() {
     rejected: complaints.filter(t => t.verdict === "rejected").length,
   };
 
-  // ─── Handlers ─────────────────────────────────────────────────────────────
+  // ─── Handlers ────────────────────────────────────────────────────────────
   const handleReply = async () => {
     if (!reply.trim() || !selected) return;
     setSaving(true);
-
     try {
       const post = {
         id: `p-${Date.now()}`,
         thread_id: selected.id,
         author: adminUser.username,
-        author_avatar_bg: "linear-gradient(135deg,#ff2d78,#8b00ff)",
+        author_id: adminUser.id,
+        author_avatar_bg: adminUser.avatarBg || "linear-gradient(135deg,#ff2d78,#8b00ff)",
         role: "ადმინისტრატორი",
         role_color: "#ff2d78",
         content: reply,
-        date: new Date(),
-        likes: 0,
         is_admin_post: true,
         is_user_reply: true,
       };
 
-      const { error } = await supabase
-        .from('forum_posts')
-        .insert([post]);
+      const { error: insertError } = await supabase.from('forum_posts').insert([post]);
+      if (insertError) throw insertError;
 
-      if (error) throw error;
+      const { error: rpcError } = await supabase.rpc('increment_forum_thread_replies', { thread_id: selected.id });
+      if (rpcError) throw rpcError;
 
-      await supabase.rpc('increment_forum_thread_replies', { thread_id: selected.id });
-
-      setThreads(prev => prev.map(t => 
-        t.id === selected.id 
-          ? { ...t, posts: [...(t.posts || []), post], repliesCount: (t.repliesCount || 0) + 1 }
+      setThreads(prev => prev.map(t =>
+        t.id === selected.id
+          ? { ...t, posts: [...(t.posts || []), post], replies_count: (t.replies_count || 0) + 1 }
           : t
       ));
-
       setReply("");
     } catch (error) {
       console.error('Error adding reply:', error);
@@ -2030,7 +1911,6 @@ export default function AdminPanel() {
   const handleVerdict = async () => {
     if (!verdictMode || !selected) return;
     setSaving(true);
-
     try {
       const content = verdictMode === "approved"
         ? `✅ **საჩივარი დადასტურებულია**\n\n${reason ? `**მიზეზი:** ${reason}` : "ადმინისტრაციის გადაწყვეტილებით."}`
@@ -2040,12 +1920,11 @@ export default function AdminPanel() {
         id: `p-${Date.now()}`,
         thread_id: selected.id,
         author: adminUser.username,
-        author_avatar_bg: "linear-gradient(135deg,#ff2d78,#8b00ff)",
+        author_id: adminUser.id,
+        author_avatar_bg: adminUser.avatarBg || "linear-gradient(135deg,#ff2d78,#8b00ff)",
         role: "ადმინისტრატორი",
         role_color: "#ff2d78",
-        content: content,
-        date: new Date(),
-        likes: 0,
+        content,
         is_admin_post: true,
         is_user_reply: true,
       };
@@ -2057,34 +1936,29 @@ export default function AdminPanel() {
           verdict_reason: reason,
           label: verdictMode === "approved" ? "დადასტურებულია" : "უარყოფილია",
           allow_replies: false,
-          updated_at: new Date()
         })
         .eq('id', selected.id);
-
       if (threadError) throw threadError;
 
-      const { error: postError } = await supabase
-        .from('forum_posts')
-        .insert([adminPost]);
-
+      const { error: postError } = await supabase.from('forum_posts').insert([adminPost]);
       if (postError) throw postError;
 
-      await supabase.rpc('increment_forum_thread_replies', { thread_id: selected.id });
+      const { error: rpcError } = await supabase.rpc('increment_forum_thread_replies', { thread_id: selected.id });
+      if (rpcError) throw rpcError;
 
-      setThreads(prev => prev.map(t => 
-        t.id === selected.id 
-          ? { 
-              ...t, 
-              verdict: verdictMode, 
+      setThreads(prev => prev.map(t =>
+        t.id === selected.id
+          ? {
+              ...t,
+              verdict: verdictMode,
               verdict_reason: reason,
               label: verdictMode === "approved" ? "დადასტურებულია" : "უარყოფილია",
               allow_replies: false,
               posts: [...(t.posts || []), adminPost],
-              repliesCount: (t.repliesCount || 0) + 1
+              replies_count: (t.replies_count || 0) + 1,
             }
           : t
       ));
-
       setVerdictMode(null);
       setReason("");
     } catch (error) {
@@ -2104,41 +1978,31 @@ export default function AdminPanel() {
           label: "დახურულია ✓ აყვანილია",
           allow_replies: false,
           closed_by: adminUser?.username || "ადმინი",
-          closed_at: new Date(),
-          updated_at: new Date()
+          closed_at: new Date().toISOString(),
         })
         .eq('id', threadId);
-
       if (threadError) throw threadError;
 
       const { error: cvError } = await supabase
         .from('forum_cvs')
-        .update({
-          hired: true,
-          hired_at: new Date(),
-          hired_by: adminUser?.username
-        })
+        .update({ hired: true, hired_at: new Date().toISOString(), hired_by: adminUser?.username })
         .eq('id', cvId);
-
       if (cvError) throw cvError;
 
-      setThreads(prev => prev.map(t => 
-        t.id === threadId 
-          ? { 
-              ...t, 
-              is_closed: true, 
-              label: "დახურულია ✓ აყვანილია",
-              allow_replies: false,
-              closed_by: adminUser?.username,
-              closed_at: new Date()
-            }
+      setThreads(prev => prev.map(t =>
+        t.id === threadId
+          ? { ...t, is_closed: true, label: "დახურულია ✓ აყვანილია", allow_replies: false, closed_by: adminUser?.username, closed_at: new Date().toISOString() }
           : t
       ));
-
     } catch (error) {
       console.error('Error closing vacancy:', error);
       alert('❌ ვაკანსიის დახურვა ვერ მოხერხდა');
     }
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setAdminUser(null);
   };
 
   const statusInfo = selected ? getStatusBadge(selected.verdict) : null;
@@ -2159,8 +2023,9 @@ export default function AdminPanel() {
             <div style={{ display:"flex", alignItems:"center", gap:10 }}>
               <div style={{ width:8, height:8, borderRadius:"50%", background:"var(--adm-green)", boxShadow:"0 0 10px var(--adm-green)" }}/>
               <span style={{ fontSize:14, fontWeight:600 }}>{adminUser.username}</span>
+              <RoleBadge roleId={normalizeRole(adminUser, roles)} roles={roles} />
             </div>
-            <button onClick={() => { localStorage.removeItem("grl_admin_user"); supabase.auth.signOut(); setAdminUser(null); }} className="adm-btn adm-btn-danger adm-btn-sm">
+            <button onClick={handleLogout} className="adm-btn adm-btn-danger adm-btn-sm">
               <LogOut size={14}/> გასვლა
             </button>
           </div>
@@ -2175,7 +2040,7 @@ export default function AdminPanel() {
           </div>
         ) : (
           <>
-            <RoleManager roles={roles} setRoles={setRoles} adminUser={adminUser}/>
+            <RoleManager roles={roles} reloadRoles={reloadRoles}/>
             <UsersManagement adminUser={adminUser} setAdminUser={setAdminUser} roles={roles}/>
 
             <div className="adm-tabs">
@@ -2190,10 +2055,7 @@ export default function AdminPanel() {
             </div>
 
             {activeSection === "cvs" && (
-              <CVsSection 
-                adminUser={adminUser} 
-                onCloseVacancy={handleCloseVacancy}
-              />
+              <CVsSection adminUser={adminUser} onCloseVacancy={handleCloseVacancy} />
             )}
 
             {activeSection === "complaints" && (
@@ -2205,7 +2067,7 @@ export default function AdminPanel() {
                     { id:"approved", label:"დადასტურდა", val:counts.approved, color:"var(--adm-green)" },
                     { id:"rejected", label:"უარყოფილი", val:counts.rejected, color:"var(--adm-red)" },
                   ].map(s => (
-                    <div key={s.id} className="adm-stat-card" onClick={() => setFilter(s.id)} 
+                    <div key={s.id} className="adm-stat-card" onClick={() => setFilter(s.id)}
                       style={{ cursor:"pointer", borderColor:filter===s.id?`color-mix(in oklab, ${s.color} 60%, transparent)`:"var(--adm-border)", background:filter===s.id?`color-mix(in oklab, ${s.color} 10%, var(--adm-card))`:"var(--adm-card)" }}>
                       <div style={{ position:"absolute", top:-20, right:-20, width:100, height:100, borderRadius:"50%", filter:"blur(40px)", background:s.color, opacity:0.15 }}/>
                       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
@@ -2256,7 +2118,7 @@ export default function AdminPanel() {
                             </div>
                             <div style={{ fontSize:11, color:"var(--adm-muted-2)", flexShrink:0, textAlign:"right" }}>
                               <div>{t.posts?.length||0} პ</div>
-                              <div style={{ fontSize:10, opacity:0.6 }}>{t.repliesCount||0} პას</div>
+                              <div style={{ fontSize:10, opacity:0.6 }}>{t.replies_count||0} პას</div>
                             </div>
                           </div>
                         );
@@ -2301,7 +2163,7 @@ export default function AdminPanel() {
                             <div key={post.id} className={`adm-post ${post.is_admin_post?"adm-post-admin":"adm-post-user"}`}>
                               <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
                                 <div style={{ width:32, height:32, borderRadius:"50%", background:post.author_avatar_bg||"linear-gradient(135deg,#ec4899,#f43f5e)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:13, fontWeight:700, flexShrink:0 }}>
-                                  {post.author[0]?.toUpperCase()}
+                                  {post.author?.[0]?.toUpperCase()}
                                 </div>
                                 <div>
                                   <span style={{ fontWeight:700, fontSize:14, color:post.is_admin_post?"var(--adm-pink)":"var(--adm-text)" }}>{post.author}</span>
@@ -2349,5 +2211,5 @@ export default function AdminPanel() {
         )}
       </main>
     </div>
-  );
+  ); 
 }
