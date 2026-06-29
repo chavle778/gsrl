@@ -86,11 +86,11 @@ const normalizeRole = (user, roles) => {
 
 const isUserAdmin = (user, roles) => {
   const role = getRoleById(normalizeRole(user, roles), roles);
-  return (role?.level || 0) >= 50;
+  return (role?.level || 0) >= 8;
 };
 
 /* ══════════════════════════════════════════════════════════════════════════
-   MODAL SYSTEM — replaces all alert() / window.confirm()
+   MODAL SYSTEM
 ══════════════════════════════════════════════════════════════════════════ */
 let _setModalState = null;
 
@@ -142,8 +142,7 @@ function ModalRoot() {
         boxShadow: "0 32px 80px oklch(0 0 0 / 0.55), 0 0 0 1px oklch(1 0 0 / 0.04)",
         animation: "admSlideUp .22s cubic-bezier(0.22,1,0.36,1) both",
       }}>
-        {/* Icon */}
-        <div style={{
+      <div style={{
           width: 52, height: 52, borderRadius: 16, marginBottom: 20,
           display: "flex", alignItems: "center", justifyContent: "center",
           background: isDanger ? "oklch(0.70 0.22 25 / 0.12)" : isConfirm ? "oklch(0.72 0.22 5 / 0.12)" : "oklch(0.78 0.14 220 / 0.12)",
@@ -156,18 +155,12 @@ function ModalRoot() {
               : <Info size={24} style={{ color: "var(--adm-cyan)" }} />
           }
         </div>
-
-        {/* Title */}
         <div style={{ fontFamily: "var(--adm-font-d)", fontSize: 22, letterSpacing: "0.04em", marginBottom: 10 }}>
           {modal.title}
         </div>
-
-        {/* Message */}
         <div style={{ fontSize: 15, color: "var(--adm-muted)", lineHeight: 1.6, marginBottom: 28 }}>
           {modal.message}
         </div>
-
-        {/* Buttons */}
         <div style={{ display: "flex", gap: 10 }}>
           {isConfirm && (
             <button onClick={modal.onCancel} className="adm-btn adm-btn-ghost" style={{ flex: 1, padding: "12px 0" }}>
@@ -564,47 +557,78 @@ function AdminLogin({ onLogin }) {
   const [loading, setLoading] = useState(false);
   const [showPw, setShowPw]   = useState(false);
 
+  const syncUserFromSupabase = async (userId, userEmail) => {
+    try {
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .maybeSingle();
+      
+      if (error || !profile) return null;
+      
+      return {
+        id: userId,
+        username: profile.username || userEmail?.split('@')[0] || 'Admin',
+        email: userEmail || '',
+        password: password,
+        role: profile.role || 'tec',
+        isAdmin: profile.is_admin || false,
+        avatarBg: profile.avatar_bg || "linear-gradient(135deg,#ff2d78,#8b00ff)",
+        registeredAt: new Date().toISOString(),
+      };
+    } catch (e) {
+      console.error('Sync error:', e);
+      return null;
+    }
+  };
+
   const submit = async () => {
     setErr(""); setLoading(true);
     try {
+      // 1. Sign in with Supabase
       const { data: { user }, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) { setErr("არასწორი ელ-ფოსტა ან პაროლი"); setLoading(false); return; }
 
-      const users = loadUsers();
+      // 2. Load users from localStorage
+      let users = loadUsers();
       let adminUser = users.find(u => u.id === user.id);
 
+      // 3. If not found in localStorage, sync from Supabase
       if (!adminUser) {
-        const { data: profile, error: profileError } = await supabase
-          .from('profiles').select('*').eq('id', user.id).maybeSingle();
-        if (profileError || !profile || !profile?.is_admin) {
+        const syncedUser = await syncUserFromSupabase(user.id, user.email);
+        if (!syncedUser || !syncedUser.isAdmin) {
           setErr("თქვენ არ გაქვთ ადმინისტრატორის უფლებები");
-          await supabase.auth.signOut(); setLoading(false); return;
+          await supabase.auth.signOut();
+          setLoading(false);
+          return;
         }
-        adminUser = {
-          id: user.id,
-          username: profile.username || user.email?.split('@')[0] || 'Admin',
-          email: user.email, password,
-          role: profile.role || 'tec', isAdmin: true,
-          avatarBg: profile.avatar_bg || "linear-gradient(135deg,#ff2d78,#8b00ff)",
-          registeredAt: new Date().toISOString(),
-        };
-        ls.set("grl_users", [...users, adminUser]);
+        adminUser = syncedUser;
+        users.push(adminUser);
+        ls.set("grl_users", users);
         window.dispatchEvent(new Event("grlAuthChange"));
       }
 
+      // 4. Verify admin role
       const roles = loadRoles();
       if (!isUserAdmin(adminUser, roles)) {
         setErr("თქვენ არ გაქვთ ადმინისტრატორის უფლებები");
-        await supabase.auth.signOut(); setLoading(false); return;
+        await supabase.auth.signOut();
+        setLoading(false);
+        return;
       }
 
+      // 5. Save session
       const sessionUser = {
-        id: adminUser.id, username: adminUser.username, email: adminUser.email,
+        id: adminUser.id,
+        username: adminUser.username,
+        email: adminUser.email,
         role: normalizeRole(adminUser, roles),
         avatarBg: adminUser.avatarBg || "linear-gradient(135deg,#ff2d78,#8b00ff)",
       };
       ls.set("grl_admin_user", sessionUser);
       onLogin(sessionUser);
+
     } catch (e) {
       console.error("Login error:", e);
       setErr("დაფიქსირდა შეცდომა, სცადეთ თავიდან");
@@ -703,7 +727,7 @@ function UsersManagement({ adminUser, roles }) {
 
   const handleRoleSelect = (user, newRoleId) => {
     const role = getRoleById(newRoleId, roles);
-    const willBeAdmin = (role?.level || 0) >= 50;
+    const willBeAdmin = (role?.level || 0) >= 8;
     saveUsers(users.map(u => u.id !== user.id ? u : { ...u, role: newRoleId, isAdmin: willBeAdmin }));
     const cu = ls.get("grl_admin_user");
     if (cu && cu.id === user.id) ls.set("grl_admin_user", { ...cu, role: newRoleId });
