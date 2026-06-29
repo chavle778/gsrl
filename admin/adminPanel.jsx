@@ -963,6 +963,7 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
   const [loading, setLoading] = useState(false);
   const [roleDropdownUser, setRoleDropdownUser] = useState(null);
   const roleButtonRefs = useRef({});
+  const [shownPasswords, setShownPasswords] = useState({});
 
   const loadUsers = useCallback(async () => {
     try {
@@ -974,10 +975,13 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
 
       if (error) throw error;
 
+      // 🔥 FIX: Load users with a default password placeholder
+      // Since Supabase doesn't store passwords in profiles, we use a placeholder
       setUsers((profiles || []).map(p => ({
         id: p.id,
         username: p.username,
         email: p.email || 'N/A',
+        password: '••••••••', // Placeholder - real passwords are in auth.users
         role: p.role || 'player',
         isAdmin: p.is_admin || false,
         avatarBg: p.avatar_bg || 'linear-gradient(135deg,#ec4899,#8b5cf6)',
@@ -995,6 +999,7 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
     if (showUsers) loadUsers();
   }, [showUsers, loadUsers]);
 
+  // 🔥 REAL-TIME: Listen for profile changes
   useEffect(() => {
     if (!showUsers) return;
     
@@ -1005,6 +1010,7 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
           const p = payload.new;
           setUsers(prev => [{
             id: p.id, username: p.username, email: p.email || 'N/A',
+            password: '••••••••',
             role: p.role || 'player', isAdmin: p.is_admin || false,
             avatarBg: p.avatar_bg || 'linear-gradient(135deg,#ec4899,#8b5cf6)',
             registeredAt: p.registered_at,
@@ -1016,7 +1022,6 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
             role: p.role || 'player', isAdmin: p.is_admin || false,
             avatarBg: p.avatar_bg || u.avatarBg,
           } : u));
-          // 🔥🔥🔥 REAL-TIME: Update adminUser if it's the current admin
           if (p.id === adminUser?.id) {
             setAdminUser(prev => prev ? {
               ...prev,
@@ -1046,55 +1051,63 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
     u.email?.toLowerCase().includes(searchUser.toLowerCase())
   );
 
-  // 🔥🔥🔥 FIXED: THIS IS THE MAIN FIX FOR REFRESH PROBLEM!
+  // 🔥 Toggle password visibility
+  const togglePasswordVisibility = (userId) => {
+    setShownPasswords(prev => ({
+      ...prev,
+      [userId]: !prev[userId]
+    }));
+  };
+
+  // 🔥 FIXED: Role selection with admin update
   const handleRoleSelect = async (user, newRoleId) => {
-  const role = getRoleById(newRoleId, roles);
-  const willBeAdmin = (role?.level ?? 0) >= 2;
+    const role = getRoleById(newRoleId, roles);
+    const willBeAdmin = (role?.level ?? 0) >= 2;
 
-  try {
-    const { data: updated, error } = await supabase
-      .from('profiles')
-      .update({ 
-        role: newRoleId,
-        is_admin: willBeAdmin
-      })
-      .eq('id', user.id)
-      .select()
-      .maybeSingle(); // .single() → .maybeSingle()
+    try {
+      const { data: updated, error } = await supabase
+        .from('profiles')
+        .update({ 
+          role: newRoleId,
+          is_admin: willBeAdmin
+        })
+        .eq('id', user.id)
+        .select()
+        .maybeSingle();
 
-    if (error) {
-      console.error('Supabase error details:', error);
-      throw error;
+      if (error) {
+        console.error('Supabase error details:', error);
+        throw error;
+      }
+
+      if (!updated) {
+        console.error('No row returned — RLS might be blocking');
+        alert('❌ განახლება ვერ მოხდა — Supabase RLS policy შეამოწმე');
+        setRoleDropdownUser(null);
+        return;
+      }
+
+      setUsers(prev => prev.map(u => 
+        u.id === user.id 
+          ? { ...u, role: updated.role, isAdmin: updated.is_admin } 
+          : u
+      ));
+
+      if (user.id === adminUser?.id) {
+        setAdminUser(prev => prev ? {
+          ...prev,
+          role: updated.role,
+          isAdmin: updated.is_admin,
+        } : prev);
+      }
+
+    } catch (error) {
+      console.error('Full error:', JSON.stringify(error, null, 2));
+      alert('❌ როლის განახლება ვერ მოხერხდა: ' + error.message);
     }
 
-    if (!updated) {
-      console.error('No row returned — RLS შეიძლება ბლოკავს');
-      alert('❌ განახლება ვერ მოხდა — Supabase RLS policy შეამოწმე');
-      setRoleDropdownUser(null);
-      return;
-    }
-
-    setUsers(prev => prev.map(u => 
-      u.id === user.id 
-        ? { ...u, role: updated.role, isAdmin: updated.is_admin } 
-        : u
-    ));
-
-    if (user.id === adminUser?.id) {
-      setAdminUser(prev => prev ? {
-        ...prev,
-        role: updated.role,
-        isAdmin: updated.is_admin,
-      } : prev);
-    }
-
-  } catch (error) {
-    console.error('Full error:', JSON.stringify(error, null, 2));
-    alert('❌ როლის განახლება ვერ მოხერხდა: ' + error.message);
-  }
-
-  setRoleDropdownUser(null);
-};
+    setRoleDropdownUser(null);
+  };
 
   const deleteUser = async (userId) => {
     if (!window.confirm("დარწმუნებული ხარ?")) return;
@@ -1162,8 +1175,8 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
             <thead style={{ background:"oklch(0.72 0.22 5 / 0.08)", position:"sticky", top:0, zIndex:1 }}>
               <tr>
-                {["მომხმარებელი","ელ-ფოსტა","როლი","მოქმედებები"].map((h,i) => (
-                  <th key={h} style={{ padding:"10px 14px", textAlign:i===3?"right":"left", fontWeight:700, color:"var(--adm-muted)", fontSize:10, textTransform:"uppercase", letterSpacing:"0.1em", borderBottom:"1px solid var(--adm-border-2)" }}>
+                {["მომხმარებელი","ელ-ფოსტა","პაროლი","როლი","მოქმედებები"].map((h,i) => (
+                  <th key={h} style={{ padding:"10px 14px", textAlign:i===4?"right":"left", fontWeight:700, color:"var(--adm-muted)", fontSize:10, textTransform:"uppercase", letterSpacing:"0.1em", borderBottom:"1px solid var(--adm-border-2)" }}>
                     {h}
                   </th>
                 ))}
@@ -1171,12 +1184,13 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
             </thead>
             <tbody>
               {filteredUsers.length === 0 ? (
-                <tr><td colSpan={4} className="adm-empty">მომხმარებლები არ მოიძებნა</td></tr>
+                <tr><td colSpan={5} className="adm-empty">მომხმარებლები არ მოიძებნა</td></tr>
               ) : filteredUsers.map(user => {
                 const isSelf = user.id === adminUser?.id;
                 const userRoleId = normalizeRole(user, roles);
                 const userRole = getRoleById(userRoleId, roles);
                 const isRoleOpen = roleDropdownUser?.id === user.id;
+                const pwVisible = shownPasswords[user.id];
 
                 return (
                   <tr key={user.id} style={{ borderBottom:"1px solid var(--adm-border-2)" }}>
@@ -1191,6 +1205,33 @@ function UsersManagement({ adminUser, setAdminUser, roles }) {
                     </td>
 
                     <td style={{ padding:"10px 14px", color:"var(--adm-muted)" }}>{user.email}</td>
+
+                    <td style={{ padding:"10px 14px" }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:6, fontFamily:"var(--adm-font-m)", fontSize:12 }}>
+                        <span style={{ 
+                          color: pwVisible ? "var(--adm-yellow)" : "var(--adm-muted-2)", 
+                          letterSpacing: pwVisible ? "normal" : 2,
+                          cursor: "pointer"
+                        }}>
+                          {pwVisible ? (user.password || "N/A") : "••••••••"}
+                        </span>
+                        <button 
+                          onClick={() => togglePasswordVisibility(user.id)} 
+                          style={{ 
+                            background: "none", 
+                            border: "none", 
+                            cursor: "pointer", 
+                            color: "var(--adm-muted-2)", 
+                            padding: 2, 
+                            display: "flex", 
+                            alignItems: "center" 
+                          }}
+                          title={pwVisible ? "პაროლის დამალვა" : "პაროლის ჩვენება"}
+                        >
+                          {pwVisible ? <EyeOff size={13}/> : <EyeIcon size={13}/>}
+                        </button>
+                      </div>
+                    </td>
 
                     <td style={{ padding:"10px 14px" }}>
                       <RoleBadge roleId={userRoleId} roles={roles}/>
@@ -2211,5 +2252,5 @@ export default function AdminPanel() {
         )}
       </main>
     </div>
-  ); 
+  );
 }
