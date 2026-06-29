@@ -993,6 +993,7 @@ function AdminLogin({ onLogin }) {
         username: profile.username || user.email,
         email: user.email,
         role: 'admin',
+        isAdmin: true,
         avatarBg: profile.avatar_bg || "linear-gradient(135deg,#ff2d78,#8b00ff)",
       };
       localStorage.setItem("grl_admin_user", JSON.stringify(adminUser));
@@ -1039,7 +1040,7 @@ function AdminLogin({ onLogin }) {
 }
 
 /* ─── USERS MANAGEMENT (Supabase) ────────────────────────────────────────── */
-function UsersManagement({ adminUser, roles }) {
+function UsersManagement({ adminUser, setAdminUser, roles }) {
   const [users, setUsers] = useState([]);
   const [showUsers, setShowUsers] = useState(false);
   const [searchUser, setSearchUser] = useState("");
@@ -1136,6 +1137,7 @@ function UsersManagement({ adminUser, roles }) {
   const togglePasswordVisibility = (userId) =>
     setShownPasswords(prev => ({ ...prev, [userId]: !prev[userId] }));
 
+  // 🔥 FIXED: Role selection with admin update
   const handleRoleSelect = async (user, newRoleId) => {
     const role = getRoleById(newRoleId, allRoles);
     
@@ -1150,13 +1152,30 @@ function UsersManagement({ adminUser, roles }) {
 
       if (error) throw error;
 
-      const updated = users.map(u => u.id !== user.id ? u : {
+      const updatedUsers = users.map(u => u.id !== user.id ? u : {
         ...u,
         role: newRoleId,
         isAdmin: role?.level >= 2,
       });
-      setUsers(updated);
-      localStorage.setItem("grl_users", JSON.stringify(updated));
+      setUsers(updatedUsers);
+      localStorage.setItem("grl_users", JSON.stringify(updatedUsers));
+
+      // 🔥 IMPORTANT: Update adminUser if it's the current admin
+      if (user.id === adminUser?.id || user.username?.toLowerCase() === adminUser?.username?.toLowerCase()) {
+        const updatedAdmin = {
+          ...adminUser,
+          role: newRoleId,
+          isAdmin: role?.level >= 2,
+        };
+        localStorage.setItem("grl_admin_user", JSON.stringify(updatedAdmin));
+        
+        // Update adminUser state
+        if (setAdminUser) {
+          setAdminUser(updatedAdmin);
+        }
+        
+        console.log("✅ Admin role updated to:", newRoleId);
+      }
       
     } catch (error) {
       console.error('Error updating role:', error);
@@ -1877,7 +1896,6 @@ export default function AdminPanel() {
     
     loadCVCount();
 
-    // Real-time updates for CV count
     const subscription = supabase
       .channel('forum_cvs_count')
       .on('postgres_changes', {
@@ -2158,7 +2176,7 @@ export default function AdminPanel() {
         ) : (
           <>
             <RoleManager roles={roles} setRoles={setRoles} adminUser={adminUser}/>
-            <UsersManagement adminUser={adminUser} roles={roles}/>
+            <UsersManagement adminUser={adminUser} setAdminUser={setAdminUser} roles={roles}/>
 
             <div className="adm-tabs">
               <button className={`adm-tab${activeSection==="complaints"?" active":""}`} onClick={()=>setActiveSection("complaints")}>
