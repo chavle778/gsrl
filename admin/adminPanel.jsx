@@ -9,7 +9,6 @@ import {
   Edit2, Save, X as XIcon, PlusCircle, Tag, Award, Sparkles
 } from "lucide-react";
 import { supabase } from "../src/supabaseClient";
-
 /* ─── DEFAULT ROLES ───────────────────────────────────────────────────────── */
 const DEFAULT_ROLES = [
   {
@@ -119,7 +118,6 @@ const loadRoles = () => {
       const parsed = JSON.parse(stored);
       const defaultIds = DEFAULT_ROLES.map(r => r.id);
       const customRoles = parsed.filter(r => !defaultIds.includes(r.id));
-      // Ensure custom roles have icon as string
       const fixedCustom = customRoles.map(r => ({
         ...r,
         icon: typeof r.icon === 'string' ? r.icon : 'User'
@@ -933,9 +931,7 @@ function RoleManager({ roles, setRoles, adminUser }) {
   );
 }
 
-// ... Continue with the rest of the code (COMPLAINT_IDS, SUBFORUM_INFO, CV_FIELD_LABELS, etc.)
-
-// ─── DATA ────────────────────────────────────────────────────────────────── */
+/* ─── DATA ────────────────────────────────────────────────────────────────── */
 const COMPLAINT_IDS = ["complaint-admin", "complaint-player"];
 const SUBFORUM_INFO = {
   "complaint-admin":  { icon: "⚠️", title: "საჩივარი ადმინისტრატორზე" },
@@ -967,7 +963,7 @@ function getStatusBadge(verdict) {
   return { label: "უარყოფილია", className: "adm-badge-red", icon: XCircle };
 }
 
-// ─── ADMIN LOGIN ─────────────────────────────────────────────────────────── */
+/* ─── ADMIN LOGIN ─────────────────────────────────────────────────────────── */
 function AdminLogin({ onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -1041,11 +1037,12 @@ function AdminLogin({ onLogin }) {
   );
 }
 
-// ─── USERS MANAGEMENT ───────────────────────────────────────────────────── */
+/* ─── USERS MANAGEMENT (Supabase) ────────────────────────────────────────── */
 function UsersManagement({ adminUser, roles }) {
   const [users, setUsers] = useState([]);
   const [showUsers, setShowUsers] = useState(false);
   const [searchUser, setSearchUser] = useState("");
+  const [loading, setLoading] = useState(false);
   const [shownPasswords, setShownPasswords] = useState({});
   const [editingPassword, setEditingPassword] = useState(null);
   const [newPasswordVal, setNewPasswordVal] = useState("");
@@ -1053,14 +1050,78 @@ function UsersManagement({ adminUser, roles }) {
   const roleButtonRefs = useRef({});
   const allRoles = roles || loadRoles();
 
-  const loadUsers = () => {
+  // 🔥 Supabase-დან მომხმარებლების ჩატვირთვა
+  const loadUsers = async () => {
     try {
-      const s = localStorage.getItem("grl_users");
-      setUsers(s ? JSON.parse(s) : []);
-    } catch { setUsers([]); }
+      setLoading(true);
+      
+      const { data: profiles, error: profilesError } = await supabase
+        .from('profiles')
+        .select('*')
+        .order('registered_at', { ascending: false });
+
+      if (profilesError) throw profilesError;
+
+      const usersWithEmail = await Promise.all(
+        profiles.map(async (profile) => {
+          const { data: authUser } = await supabase
+            .from('auth.users')
+            .select('email')
+            .eq('id', profile.id)
+            .single();
+          
+          return {
+            id: profile.id,
+            username: profile.username,
+            email: authUser?.email || 'N/A',
+            password: '••••••••',
+            role: profile.role || 'player',
+            isAdmin: profile.is_admin || false,
+            avatarBg: profile.avatar_bg || 'linear-gradient(135deg,#ec4899,#8b5cf6)',
+            registeredAt: profile.registered_at
+          };
+        })
+      );
+
+      setUsers(usersWithEmail);
+    } catch (error) {
+      console.error('Error loading users from Supabase:', error);
+      try {
+        const s = localStorage.getItem("grl_users");
+        setUsers(s ? JSON.parse(s) : []);
+      } catch { setUsers([]); }
+    } finally {
+      setLoading(false);
+    }
   };
 
-  useEffect(() => { if (showUsers) loadUsers(); }, [showUsers]);
+  useEffect(() => { 
+    if (showUsers) loadUsers(); 
+  }, [showUsers]);
+
+  // Real-time updates
+  useEffect(() => {
+    if (!showUsers) return;
+    
+    const subscription = supabase
+      .channel('profiles_changes')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'profiles'
+      }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setUsers(prev => [payload.new, ...prev]);
+        } else if (payload.eventType === 'UPDATE') {
+          setUsers(prev => prev.map(u => u.id === payload.new.id ? payload.new : u));
+        } else if (payload.eventType === 'DELETE') {
+          setUsers(prev => prev.filter(u => u.id !== payload.old.id));
+        }
+      })
+      .subscribe();
+
+    return () => subscription.unsubscribe();
+  }, [showUsers]);
 
   useEffect(() => {
     const close = () => setRoleDropdownUser(null);
@@ -1076,32 +1137,75 @@ function UsersManagement({ adminUser, roles }) {
   const togglePasswordVisibility = (userId) =>
     setShownPasswords(prev => ({ ...prev, [userId]: !prev[userId] }));
 
-  const handleRoleSelect = (user, newRoleId) => {
+  const handleRoleSelect = async (user, newRoleId) => {
     const role = getRoleById(newRoleId, allRoles);
-    const updated = users.map(u => u.id !== user.id ? u : {
-      ...u,
-      role: newRoleId,
-      isAdmin: role?.level >= 2,
-    });
-    setUsers(updated);
-    localStorage.setItem("grl_users", JSON.stringify(updated));
+    
+    try {
+      // Update profile in Supabase
+      const { error } = await supabase
+        .from('profiles')
+        .update({ 
+          role: newRoleId, 
+          is_admin: role?.level >= 2 
+        })
+        .eq('id', user.id);
+
+      if (error) throw error;
+
+      // Update local state
+      const updated = users.map(u => u.id !== user.id ? u : {
+        ...u,
+        role: newRoleId,
+        isAdmin: role?.level >= 2,
+      });
+      setUsers(updated);
+      
+      // Also update localStorage for fallback
+      localStorage.setItem("grl_users", JSON.stringify(updated));
+      
+    } catch (error) {
+      console.error('Error updating role:', error);
+      alert('❌ როლის განახლება ვერ მოხერხდა');
+    }
+    
     setRoleDropdownUser(null);
   };
 
-  const deleteUser = (userId) => {
+  const deleteUser = async (userId) => {
     if (!window.confirm("დარწმუნებული ხარ?")) return;
-    const updated = users.filter(u => u.id !== userId);
-    setUsers(updated);
-    localStorage.setItem("grl_users", JSON.stringify(updated));
+    
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .delete()
+        .eq('id', userId);
+
+      if (error) throw error;
+
+      const updated = users.filter(u => u.id !== userId);
+      setUsers(updated);
+      localStorage.setItem("grl_users", JSON.stringify(updated));
+    } catch (error) {
+      console.error('Error deleting user:', error);
+      alert('❌ მომხმარებლის წაშლა ვერ მოხერხდა');
+    }
   };
 
-  const saveNewPassword = (userId) => {
+  const saveNewPassword = async (userId) => {
     if (!newPasswordVal.trim()) return;
-    const updated = users.map(u => u.id !== userId ? u : { ...u, password: newPasswordVal });
-    setUsers(updated);
-    localStorage.setItem("grl_users", JSON.stringify(updated));
-    setEditingPassword(null);
-    setNewPasswordVal("");
+    
+    try {
+      // In real app, you'd update password via auth.admin API
+      // For now, update local state
+      const updated = users.map(u => u.id !== userId ? u : { ...u, password: newPasswordVal });
+      setUsers(updated);
+      localStorage.setItem("grl_users", JSON.stringify(updated));
+      setEditingPassword(null);
+      setNewPasswordVal("");
+    } catch (error) {
+      console.error('Error updating password:', error);
+      alert('❌ პაროლის განახლება ვერ მოხერხდა');
+    }
   };
 
   if (!showUsers) {
@@ -1152,126 +1256,130 @@ function UsersManagement({ adminUser, roles }) {
       </div>
 
       <div className="adm-scroll" style={{ maxHeight:420, overflowY:"auto" }}>
-        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
-          <thead style={{ background:"oklch(0.72 0.22 5 / 0.08)", position:"sticky", top:0, zIndex:1 }}>
-            <tr>
-              {["მომხმარებელი","ელ-ფოსტა","პაროლი","როლი","მოქმედებები"].map((h,i) => (
-                <th key={h} style={{ padding:"10px 14px", textAlign:i===4?"right":"left", fontWeight:700, color:"var(--adm-muted)", fontSize:10, textTransform:"uppercase", letterSpacing:"0.1em", borderBottom:"1px solid var(--adm-border-2)" }}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {filteredUsers.length === 0 ? (
-              <tr><td colSpan={5} className="adm-empty">მომხმარებლები არ მოიძებნა</td></tr>
-            ) : filteredUsers.map(user => {
-              const isSelf = user.id === adminUser?.id ||
-                user.username?.toLowerCase() === adminUser?.username?.toLowerCase();
-              const userRoleId = normalizeRole(user, allRoles);
-              const userRole = getRoleById(userRoleId, allRoles);
-              const pwVisible = shownPasswords[user.id];
-              const isEditingPw = editingPassword === user.id;
-              const isRoleOpen = roleDropdownUser?.id === user.id;
+        {loading ? (
+          <div className="adm-empty"><Loader2 size={32} className="adm-spin"/></div>
+        ) : (
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+            <thead style={{ background:"oklch(0.72 0.22 5 / 0.08)", position:"sticky", top:0, zIndex:1 }}>
+              <tr>
+                {["მომხმარებელი","ელ-ფოსტა","პაროლი","როლი","მოქმედებები"].map((h,i) => (
+                  <th key={h} style={{ padding:"10px 14px", textAlign:i===4?"right":"left", fontWeight:700, color:"var(--adm-muted)", fontSize:10, textTransform:"uppercase", letterSpacing:"0.1em", borderBottom:"1px solid var(--adm-border-2)" }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredUsers.length === 0 ? (
+                <tr><td colSpan={5} className="adm-empty">მომხმარებლები არ მოიძებნა</td></tr>
+              ) : filteredUsers.map(user => {
+                const isSelf = user.id === adminUser?.id ||
+                  user.username?.toLowerCase() === adminUser?.username?.toLowerCase();
+                const userRoleId = normalizeRole(user, allRoles);
+                const userRole = getRoleById(userRoleId, allRoles);
+                const pwVisible = shownPasswords[user.id];
+                const isEditingPw = editingPassword === user.id;
+                const isRoleOpen = roleDropdownUser?.id === user.id;
 
-              return (
-                <tr key={user.id} style={{ borderBottom:"1px solid var(--adm-border-2)" }}>
-                  <td style={{ padding:"10px 14px" }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                      <div style={{ width:30, height:30, borderRadius:"50%", background:user.avatarBg||"linear-gradient(135deg,#ff2d78,#8b00ff)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:12, fontWeight:700, flexShrink:0 }}>
-                        {user.username?.[0]?.toUpperCase()}
+                return (
+                  <tr key={user.id} style={{ borderBottom:"1px solid var(--adm-border-2)" }}>
+                    <td style={{ padding:"10px 14px" }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                        <div style={{ width:30, height:30, borderRadius:"50%", background:user.avatarBg||"linear-gradient(135deg,#ff2d78,#8b00ff)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:12, fontWeight:700, flexShrink:0 }}>
+                          {user.username?.[0]?.toUpperCase()}
+                        </div>
+                        <span style={{ fontWeight:700 }}>{user.username}</span>
+                        {isSelf && <span className="adm-badge adm-badge-pink" style={{ fontSize:9 }}>თქვენ</span>}
                       </div>
-                      <span style={{ fontWeight:700 }}>{user.username}</span>
-                      {isSelf && <span className="adm-badge adm-badge-pink" style={{ fontSize:9 }}>თქვენ</span>}
-                    </div>
-                  </td>
+                    </td>
 
-                  <td style={{ padding:"10px 14px", color:"var(--adm-muted)" }}>{user.email}</td>
+                    <td style={{ padding:"10px 14px", color:"var(--adm-muted)" }}>{user.email}</td>
 
-                  <td style={{ padding:"10px 14px" }}>
-                    {isEditingPw ? (
-                      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                        <input
-                          autoFocus
-                          type="text"
-                          value={newPasswordVal}
-                          onChange={e => setNewPasswordVal(e.target.value)}
-                          onKeyDown={e => { if(e.key==="Enter") saveNewPassword(user.id); if(e.key==="Escape"){setEditingPassword(null);setNewPasswordVal("");} }}
-                          placeholder="ახალი პაროლი"
-                          style={{ background:"oklch(0.12 0.02 285 / 0.6)", border:"1px solid oklch(0.72 0.22 5 / 0.4)", borderRadius:6, padding:"4px 8px", color:"var(--adm-text)", fontSize:12, outline:"none", width:110, fontFamily:"var(--adm-font-m)" }}
-                        />
-                        <button onClick={() => saveNewPassword(user.id)} className="adm-btn adm-btn-success adm-btn-sm" style={{ padding:"4px 8px" }}><Check size={12}/></button>
-                        <button onClick={() => {setEditingPassword(null);setNewPasswordVal("");}} className="adm-btn adm-btn-ghost adm-btn-sm" style={{ padding:"4px 8px" }}><X size={12}/></button>
-                      </div>
-                    ) : (
-                      <div style={{ display:"flex", alignItems:"center", gap:6, fontFamily:"var(--adm-font-m)", fontSize:12 }}>
-                        <span style={{ color:pwVisible?"var(--adm-yellow)":"var(--adm-muted-2)", letterSpacing:pwVisible?"normal":2 }}>
-                          {pwVisible ? (user.password||"—") : "••••••••"}
-                        </span>
-                        <button onClick={() => togglePasswordVisibility(user.id)} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--adm-muted-2)", padding:2, display:"flex", alignItems:"center" }}>
-                          {pwVisible ? <EyeOff size={13}/> : <EyeIcon size={13}/>}
-                        </button>
-                      </div>
-                    )}
-                  </td>
-
-                  <td style={{ padding:"10px 14px" }}>
-                    <RoleBadge roleId={userRoleId} roles={allRoles}/>
-                  </td>
-
-                  <td style={{ padding:"10px 14px", textAlign:"right" }}>
-                    {isSelf ? (
-                      <span style={{ fontSize:11, color:"var(--adm-muted)" }}>
-                        <Lock size={12} style={{ display:"inline", marginRight:3 }}/>შეზღუდული
-                      </span>
-                    ) : (
-                      <div style={{ display:"flex", gap:5, justifyContent:"flex-end", position:"relative" }}>
-                        <button
-                          ref={el => roleButtonRefs.current[user.id] = el}
-                          onClick={() => setRoleDropdownUser(isRoleOpen ? null : user)}
-                          className="adm-btn adm-btn-sm"
-                          style={{
-                            background: isRoleOpen ? userRole?.bg : "oklch(1 0 0 / 0.06)",
-                            color: isRoleOpen ? userRole?.color : "var(--adm-muted)",
-                            border: `1px solid ${isRoleOpen ? userRole?.border : "var(--adm-border-2)"}`,
-                            gap: 5,
-                          }}
-                          title="როლის შეცვლა"
-                        >
-                          <Shield size={12}/>
-                          <ChevronDown size={11} style={{ transition:"transform .2s", transform:isRoleOpen?"rotate(180deg)":"none" }}/>
-                        </button>
-
-                        <button
-                          onClick={() => { setEditingPassword(user.id); setNewPasswordVal(user.password||""); }}
-                          className="adm-btn adm-btn-sm"
-                          style={{ background:"oklch(0.82 0.16 80 / 0.12)", color:"var(--adm-yellow)", border:"1px solid oklch(0.82 0.16 80 / 0.3)" }}
-                          title="პაროლის შეცვლა"
-                        >
-                          <Lock size={12}/>
-                        </button>
-
-                        <button onClick={() => deleteUser(user.id)} className="adm-btn adm-btn-danger adm-btn-sm" title="წაშლა">
-                          <Trash2 size={12}/>
-                        </button>
-
-                        {isRoleOpen && (
-                          <RoleDropdown
-                            user={user}
-                            onSelect={handleRoleSelect}
-                            onClose={() => setRoleDropdownUser(null)}
-                            triggerRef={{ current: roleButtonRefs.current[user.id] }}
-                            roles={allRoles}
+                    <td style={{ padding:"10px 14px" }}>
+                      {isEditingPw ? (
+                        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                          <input
+                            autoFocus
+                            type="text"
+                            value={newPasswordVal}
+                            onChange={e => setNewPasswordVal(e.target.value)}
+                            onKeyDown={e => { if(e.key==="Enter") saveNewPassword(user.id); if(e.key==="Escape"){setEditingPassword(null);setNewPasswordVal("");} }}
+                            placeholder="ახალი პაროლი"
+                            style={{ background:"oklch(0.12 0.02 285 / 0.6)", border:"1px solid oklch(0.72 0.22 5 / 0.4)", borderRadius:6, padding:"4px 8px", color:"var(--adm-text)", fontSize:12, outline:"none", width:110, fontFamily:"var(--adm-font-m)" }}
                           />
-                        )}
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                          <button onClick={() => saveNewPassword(user.id)} className="adm-btn adm-btn-success adm-btn-sm" style={{ padding:"4px 8px" }}><Check size={12}/></button>
+                          <button onClick={() => {setEditingPassword(null);setNewPasswordVal("");}} className="adm-btn adm-btn-ghost adm-btn-sm" style={{ padding:"4px 8px" }}><X size={12}/></button>
+                        </div>
+                      ) : (
+                        <div style={{ display:"flex", alignItems:"center", gap:6, fontFamily:"var(--adm-font-m)", fontSize:12 }}>
+                          <span style={{ color:pwVisible?"var(--adm-yellow)":"var(--adm-muted-2)", letterSpacing:pwVisible?"normal":2 }}>
+                            {pwVisible ? (user.password||"—") : "••••••••"}
+                          </span>
+                          <button onClick={() => togglePasswordVisibility(user.id)} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--adm-muted-2)", padding:2, display:"flex", alignItems:"center" }}>
+                            {pwVisible ? <EyeOff size={13}/> : <EyeIcon size={13}/>}
+                          </button>
+                        </div>
+                      )}
+                    </td>
+
+                    <td style={{ padding:"10px 14px" }}>
+                      <RoleBadge roleId={userRoleId} roles={allRoles}/>
+                    </td>
+
+                    <td style={{ padding:"10px 14px", textAlign:"right" }}>
+                      {isSelf ? (
+                        <span style={{ fontSize:11, color:"var(--adm-muted)" }}>
+                          <Lock size={12} style={{ display:"inline", marginRight:3 }}/>შეზღუდული
+                        </span>
+                      ) : (
+                        <div style={{ display:"flex", gap:5, justifyContent:"flex-end", position:"relative" }}>
+                          <button
+                            ref={el => roleButtonRefs.current[user.id] = el}
+                            onClick={() => setRoleDropdownUser(isRoleOpen ? null : user)}
+                            className="adm-btn adm-btn-sm"
+                            style={{
+                              background: isRoleOpen ? userRole?.bg : "oklch(1 0 0 / 0.06)",
+                              color: isRoleOpen ? userRole?.color : "var(--adm-muted)",
+                              border: `1px solid ${isRoleOpen ? userRole?.border : "var(--adm-border-2)"}`,
+                              gap: 5,
+                            }}
+                            title="როლის შეცვლა"
+                          >
+                            <Shield size={12}/>
+                            <ChevronDown size={11} style={{ transition:"transform .2s", transform:isRoleOpen?"rotate(180deg)":"none" }}/>
+                          </button>
+
+                          <button
+                            onClick={() => { setEditingPassword(user.id); setNewPasswordVal(user.password||""); }}
+                            className="adm-btn adm-btn-sm"
+                            style={{ background:"oklch(0.82 0.16 80 / 0.12)", color:"var(--adm-yellow)", border:"1px solid oklch(0.82 0.16 80 / 0.3)" }}
+                            title="პაროლის შეცვლა"
+                          >
+                            <Lock size={12}/>
+                          </button>
+
+                          <button onClick={() => deleteUser(user.id)} className="adm-btn adm-btn-danger adm-btn-sm" title="წაშლა">
+                            <Trash2 size={12}/>
+                          </button>
+
+                          {isRoleOpen && (
+                            <RoleDropdown
+                              user={user}
+                              onSelect={handleRoleSelect}
+                              onClose={() => setRoleDropdownUser(null)}
+                              triggerRef={{ current: roleButtonRefs.current[user.id] }}
+                              roles={allRoles}
+                            />
+                          )}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
 
       <div style={{ padding:"11px 18px", borderTop:"1px solid var(--adm-border-2)", display:"flex", justifyContent:"space-between", fontSize:12, color:"var(--adm-muted)" }}>
@@ -1288,7 +1396,7 @@ function UsersManagement({ adminUser, roles }) {
   );
 }
 
-// ─── CV CARD ─────────────────────────────────────────────────────────────── */
+/* ─── CV CARD ─────────────────────────────────────────────────────────────── */
 function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
   const [verdictMode, setVerdictMode] = useState(null);
   const [reason, setReason] = useState("");
@@ -1339,13 +1447,13 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
     <div className="adm-cv-card adm-fade">
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:12, flexWrap:"wrap" }}>
         <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
-          <div style={{ width:36, height:36, borderRadius:"50%", background:cv.authorAvatar||"linear-gradient(135deg,#ec4899,#f43f5e)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:14, flexShrink:0 }}>
+          <div style={{ width:36, height:36, borderRadius:"50%", background:cv.author_avatar_bg||"linear-gradient(135deg,#ec4899,#f43f5e)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:14, flexShrink:0 }}>
             {cv.author?.[0]?.toUpperCase()}
           </div>
           <div style={{ minWidth:0 }}>
             <div style={{ fontWeight:800, fontSize:14 }}>{cv.author}</div>
             <div style={{ fontSize:11, color:"var(--adm-muted)", display:"flex", alignItems:"center", gap:5, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-              <Briefcase size={11}/> {cv.vacancyTitle}
+              <Briefcase size={11}/> {cv.vacancy_title}
             </div>
           </div>
         </div>
@@ -1360,7 +1468,7 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
           )}
           <span className={`adm-badge ${statusInfo.className}`}><StatusIcon size={11}/> {statusInfo.label}</span>
           <span style={{ fontSize:11, color:"var(--adm-muted-2)" }}>
-            {new Date(cv.submittedAt).toLocaleString("ka-GE")}
+            {new Date(cv.submitted_at).toLocaleString("ka-GE")}
           </span>
         </div>
       </div>
@@ -1374,10 +1482,10 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
         ))}
       </div>
 
-      {status && cv.statusReason && (
+      {status && cv.status_reason && (
         <div className={`adm-verdict-box ${status==="approved"?"adm-verdict-approved":"adm-verdict-rejected"}`} style={{ marginBottom:14 }}>
           {status==="approved" ? <CheckCircle2 size={16}/> : <XCircle size={16}/>}
-          <div style={{ fontSize:13 }}>{cv.statusReason}</div>
+          <div style={{ fontSize:13 }}>{cv.status_reason}</div>
         </div>
       )}
 
@@ -1388,9 +1496,9 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
             <div style={{ fontSize: 13, fontWeight: 700, color: "oklch(0.78 0.19 160)" }}>
               ✅ კანდიდატი აყვანილია!
             </div>
-            {cv.hiredBy && (
+            {cv.hired_by && (
               <div style={{ fontSize: 11, color: "var(--adm-muted)", marginTop: 2 }}>
-                ადმინი: {cv.hiredBy} · {cv.hiredAt ? new Date(cv.hiredAt).toLocaleString("ka-GE") : ""}
+                ადმინი: {cv.hired_by} · {cv.hired_at ? new Date(cv.hired_at).toLocaleString("ka-GE") : ""}
               </div>
             )}
           </div>
@@ -1517,35 +1625,56 @@ function CVCard({ cv, adminUser, onVerdict, onReply, onClose, onEditReply }) {
   );
 }
 
-// ─── CVs SECTION ────────────────────────────────────────────────────────── */
+/* ─── CVs SECTION (Supabase) ────────────────────────────────────────────── */
 function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply }) {
-  const [cvs, setCvs] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("grl_cvs") || "[]"); } 
-    catch { return []; }
-  });
+  const [cvs, setCvs] = useState([]);
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const loadCVs = async () => {
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('forum_cvs')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setCvs(data || []);
+    } catch (error) {
+      console.error('Error loading CVs from Supabase:', error);
+      try {
+        const s = localStorage.getItem("grl_cvs");
+        setCvs(s ? JSON.parse(s) : []);
+      } catch { setCvs([]); }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const bc = new BroadcastChannel("grl_role_updates");
-    bc.onmessage = (event) => {
-      if (event.data?.type === "cv_submitted") {
-        try {
-          const fresh = JSON.parse(localStorage.getItem("grl_cvs") || "[]");
-          setCvs(fresh);
-        } catch {}
-      }
-    };
-    return () => bc.close();
-  }, []);
+    loadCVs();
 
-  useEffect(() => {
-    const listener = () => {
-      try { setCvs(JSON.parse(localStorage.getItem("grl_cvs") || "[]")); } 
-      catch {}
-    };
-    window.addEventListener("storage", listener);
-    return () => window.removeEventListener("storage", listener);
+    // Real-time updates
+    const subscription = supabase
+      .channel('forum_cvs_changes')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'forum_cvs'
+      }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setCvs(prev => [payload.new, ...prev]);
+        } else if (payload.eventType === 'UPDATE') {
+          setCvs(prev => prev.map(c => c.id === payload.new.id ? payload.new : c));
+        } else if (payload.eventType === 'DELETE') {
+          setCvs(prev => prev.filter(c => c.id !== payload.old.id));
+        }
+      })
+      .subscribe();
+
+    return () => subscription.unsubscribe();
   }, []);
 
   const counts = {
@@ -1565,8 +1694,8 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
     if (search.trim()) {
       const q = search.toLowerCase();
       return c.author?.toLowerCase().includes(q) || 
-             c.vacancyTitle?.toLowerCase().includes(q) ||
-             c.fields?.fullName?.toLowerCase().includes(q);
+             c.vacancy_title?.toLowerCase().includes(q) ||
+             c.full_name?.toLowerCase().includes(q);
     }
     return true;
   });
@@ -1603,7 +1732,9 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
         </div>
       </div>
 
-      {filteredCVs.length === 0 ? (
+      {loading ? (
+        <div className="adm-card"><div className="adm-empty"><Loader2 size={32} className="adm-spin"/></div></div>
+      ) : filteredCVs.length === 0 ? (
         <div className="adm-card">
           <div className="adm-empty">
             <Briefcase size={32} style={{ opacity:0.3, marginBottom:12 }}/>
@@ -1618,44 +1749,95 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
               key={cv.id} 
               cv={cv} 
               adminUser={adminUser}
-              onVerdict={(cvId, verdict, reason, shouldCloseVacancy) => {
-                const updated = cvs.map(c => {
-                  if (c.id !== cvId) return c;
-                  return { ...c, status: verdict, statusReason: reason };
-                });
-                setCvs(updated);
-                localStorage.setItem("grl_cvs", JSON.stringify(updated));
-                
-                if (shouldCloseVacancy) {
-                  const cv = cvs.find(c => c.id === cvId);
-                  if (cv && cv.threadId) {
-                    onCloseVacancy(cv.threadId, cvId);
+              onVerdict={async (cvId, verdict, reason, shouldCloseVacancy) => {
+                try {
+                  // Update CV status
+                  const { error } = await supabase
+                    .from('forum_cvs')
+                    .update({ 
+                      status: verdict, 
+                      status_reason: reason 
+                    })
+                    .eq('id', cvId);
+
+                  if (error) throw error;
+
+                  // Update local state
+                  setCvs(prev => prev.map(c => 
+                    c.id === cvId ? { ...c, status: verdict, status_reason: reason } : c
+                  ));
+                  
+                  if (shouldCloseVacancy) {
+                    const cv = cvs.find(c => c.id === cvId);
+                    if (cv && cv.thread_id) {
+                      onCloseVacancy(cv.thread_id, cvId);
+                    }
                   }
+                } catch (error) {
+                  console.error('Error updating CV verdict:', error);
+                  alert('❌ გადაწყვეტილების შენახვა ვერ მოხერხდა');
                 }
               }}
-              onReply={(cvId, text) => {
-                const updated = cvs.map(c => 
-                  c.id === cvId ? { ...c, adminReply: text, adminReplyDate: new Date().toISOString() } : c
-                );
-                setCvs(updated);
-                localStorage.setItem("grl_cvs", JSON.stringify(updated));
+              onReply={async (cvId, text) => {
+                try {
+                  const { error } = await supabase
+                    .from('forum_cvs')
+                    .update({ 
+                      admin_reply: text, 
+                      admin_reply_date: new Date() 
+                    })
+                    .eq('id', cvId);
+
+                  if (error) throw error;
+
+                  setCvs(prev => prev.map(c => 
+                    c.id === cvId ? { ...c, adminReply: text, adminReplyDate: new Date() } : c
+                  ));
+                } catch (error) {
+                  console.error('Error adding reply:', error);
+                  alert('❌ პასუხის გაგზავნა ვერ მოხერხდა');
+                }
               }}
-              onEditReply={(cvId, text) => {
-                const updated = cvs.map(c => 
-                  c.id === cvId ? { ...c, adminReply: text, adminReplyDate: new Date().toISOString() } : c
-                );
-                setCvs(updated);
-                localStorage.setItem("grl_cvs", JSON.stringify(updated));
+              onEditReply={async (cvId, text) => {
+                try {
+                  const { error } = await supabase
+                    .from('forum_cvs')
+                    .update({ 
+                      admin_reply: text, 
+                      admin_reply_date: new Date() 
+                    })
+                    .eq('id', cvId);
+
+                  if (error) throw error;
+
+                  setCvs(prev => prev.map(c => 
+                    c.id === cvId ? { ...c, adminReply: text, adminReplyDate: new Date() } : c
+                  ));
+                } catch (error) {
+                  console.error('Error editing reply:', error);
+                  alert('❌ პასუხის რედაქტირება ვერ მოხერხდა');
+                }
               }}
-              onClose={(cvId) => {
-                const updated = cvs.map(c => 
-                  c.id === cvId ? { ...c, vacancyClosed: true } : c
-                );
-                setCvs(updated);
-                localStorage.setItem("grl_cvs", JSON.stringify(updated));
-                const cv = cvs.find(c => c.id === cvId);
-                if (cv && cv.threadId) {
-                  onCloseVacancy(cv.threadId, cvId);
+              onClose={async (cvId) => {
+                try {
+                  const { error } = await supabase
+                    .from('forum_cvs')
+                    .update({ vacancy_closed: true })
+                    .eq('id', cvId);
+
+                  if (error) throw error;
+
+                  setCvs(prev => prev.map(c => 
+                    c.id === cvId ? { ...c, vacancyClosed: true } : c
+                  ));
+                  
+                  const cv = cvs.find(c => c.id === cvId);
+                  if (cv && cv.thread_id) {
+                    onCloseVacancy(cv.thread_id, cvId);
+                  }
+                } catch (error) {
+                  console.error('Error closing vacancy:', error);
+                  alert('❌ ვაკანსიის დახურვა ვერ მოხერხდა');
                 }
               }}
             />
@@ -1666,7 +1848,7 @@ function CVsSection({ adminUser, onVerdict, onReply, onCloseVacancy, onEditReply
   );
 }
 
-// ─── MAIN ADMIN PANEL ────────────────────────────────────────────────────── */
+/* ─── MAIN ADMIN PANEL ────────────────────────────────────────────────────── */
 export default function AdminPanel() {
   useEffect(() => { injectAdminStyles(); }, []);
 
@@ -1683,19 +1865,51 @@ export default function AdminPanel() {
   const [saving, setSaving] = useState(false);
   const [roles, setRoles] = useState(loadRoles);
 
+  // ─── Load Threads from Supabase ──────────────────────────────────────────
   const loadThreads = async () => {
     try {
-      const { data, error } = await supabase.from('threads').select('*').order('created_at', { ascending: false });
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('forum_threads')
+        .select('*')
+        .order('created_at', { ascending: false });
+
       if (error) throw error;
       setThreads(data || []);
-    } catch {
-      try { const s = localStorage.getItem("grl_threads"); setThreads(s ? JSON.parse(s) : []); } catch { setThreads([]); }
+    } catch (error) {
+      console.error('Error loading threads from Supabase:', error);
+      try { 
+        const s = localStorage.getItem("grl_threads"); 
+        setThreads(s ? JSON.parse(s) : []); 
+      } catch { setThreads([]); }
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   useEffect(() => { loadThreads(); }, []);
-  useEffect(() => { const iv = setInterval(loadThreads, 5000); return () => clearInterval(iv); }, []);
+
+  // Real-time threads updates
+  useEffect(() => {
+    const subscription = supabase
+      .channel('forum_threads_changes')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'forum_threads'
+      }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setThreads(prev => [payload.new, ...prev]);
+        } else if (payload.eventType === 'UPDATE') {
+          setThreads(prev => prev.map(t => t.id === payload.new.id ? payload.new : t));
+        } else if (payload.eventType === 'DELETE') {
+          setThreads(prev => prev.filter(t => t.id !== payload.old.id));
+        }
+      })
+      .subscribe();
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   useEffect(() => {
     const handleStorage = () => setRoles(loadRoles());
@@ -1705,10 +1919,16 @@ export default function AdminPanel() {
 
   if (!adminUser) return <AdminLogin onLogin={u => setAdminUser(u)}/>;
 
-  const complaints = threads.filter(t => COMPLAINT_IDS.includes(t.subforumId));
+  const complaints = threads.filter(t => COMPLAINT_IDS.includes(t.subforum_id));
   const filtered = complaints.filter(t => {
-    if (filter !== "all") { const s = t.verdict || "pending"; if (s !== filter) return false; }
-    if (search.trim()) return t.title.toLowerCase().includes(search.toLowerCase()) || t.author.toLowerCase().includes(search.toLowerCase());
+    if (filter !== "all") { 
+      const s = t.verdict || "pending"; 
+      if (s !== filter) return false; 
+    }
+    if (search.trim()) {
+      return t.title?.toLowerCase().includes(search.toLowerCase()) || 
+             t.author?.toLowerCase().includes(search.toLowerCase());
+    }
     return true;
   });
 
@@ -1719,65 +1939,165 @@ export default function AdminPanel() {
     rejected: complaints.filter(t => t.verdict === "rejected").length,
   };
 
-  const totalCVs = (() => {
-    try { return JSON.parse(localStorage.getItem("grl_cvs") || "[]").length; } 
-    catch { return 0; }
-  })();
-
-  const persist = async (updater) => {
-    const up = updater([...threads]);
-    setThreads(up);
-    try {
-      const { error } = await supabase.from('threads').upsert(up, { onConflict: 'id' });
-      if (error) throw error;
-    } catch { try { localStorage.setItem("grl_threads", JSON.stringify(up)); } catch {} }
-  };
-
-  const handleReply = () => {
+  // ─── Handlers ─────────────────────────────────────────────────────────────
+  const handleReply = async () => {
     if (!reply.trim() || !selected) return;
     setSaving(true);
-    const post = { id:`p-${Date.now()}`, author:adminUser.username, avatarBg:"linear-gradient(135deg,#ff2d78,#8b00ff)", role:"ადმინისტრატორი", roleColor:"#ff2d78", content:reply, date:new Date().toLocaleString("ka-GE"), likes:0, isAdminPost:true };
-    persist(all => all.map(t => t.id !== selected.id ? t : { ...t, posts:[...(t.posts||[]),post], repliesCount:(t.repliesCount||0)+1, updated_at:new Date().toISOString() }));
-    setReply(""); setSaving(false);
+
+    try {
+      const post = {
+        id: `p-${Date.now()}`,
+        thread_id: selected.id,
+        author: adminUser.username,
+        author_avatar_bg: "linear-gradient(135deg,#ff2d78,#8b00ff)",
+        role: "ადმინისტრატორი",
+        role_color: "#ff2d78",
+        content: reply,
+        date: new Date(),
+        likes: 0,
+        is_admin_post: true,
+        is_user_reply: true,
+      };
+
+      const { error } = await supabase
+        .from('forum_posts')
+        .insert([post]);
+
+      if (error) throw error;
+
+      await supabase.rpc('increment_forum_thread_replies', { thread_id: selected.id });
+
+      setThreads(prev => prev.map(t => 
+        t.id === selected.id 
+          ? { ...t, posts: [...(t.posts || []), post], repliesCount: (t.repliesCount || 0) + 1 }
+          : t
+      ));
+
+      setReply("");
+    } catch (error) {
+      console.error('Error adding reply:', error);
+      alert('❌ პასუხის გაგზავნა ვერ მოხერხდა');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleVerdict = () => {
+  const handleVerdict = async () => {
     if (!verdictMode || !selected) return;
     setSaving(true);
-    const post = {
-      id:`p-${Date.now()}`, author:adminUser.username, avatarBg:"linear-gradient(135deg,#ff2d78,#8b00ff)",
-      role:"ადმინისტრატორი", roleColor:"#ff2d78",
-      content: verdictMode==="approved"
-        ? `✅ **საჩივარი დადასტურებულია**\n\n${reason?`**მიზეზი:** ${reason}`:"ადმინისტრაციის გადაწყვეტილებით."}`
-        : `❌ **საჩივარი უარყოფილია**\n\n${reason?`**მიზეზი:** ${reason}`:"ადმინისტრაციის გადაწყვეტილებით."}`,
-      date:new Date().toLocaleString("ka-GE"), likes:0, isAdminPost:true,
-    };
-    persist(all => all.map(t => t.id !== selected.id ? t : { ...t, verdict:verdictMode, verdictReason:reason, label:verdictMode==="approved"?"დადასტურებულია":"უარყოფილია", allowReplies:false, posts:[...(t.posts||[]),post], updated_at:new Date().toISOString() }));
-    setVerdictMode(null); setReason(""); setSaving(false);
+
+    try {
+      const content = verdictMode === "approved"
+        ? `✅ **საჩივარი დადასტურებულია**\n\n${reason ? `**მიზეზი:** ${reason}` : "ადმინისტრაციის გადაწყვეტილებით."}`
+        : `❌ **საჩივარი უარყოფილია**\n\n${reason ? `**მიზეზი:** ${reason}` : "ადმინისტრაციის გადაწყვეტილებით."}`;
+
+      const adminPost = {
+        id: `p-${Date.now()}`,
+        thread_id: selected.id,
+        author: adminUser.username,
+        author_avatar_bg: "linear-gradient(135deg,#ff2d78,#8b00ff)",
+        role: "ადმინისტრატორი",
+        role_color: "#ff2d78",
+        content: content,
+        date: new Date(),
+        likes: 0,
+        is_admin_post: true,
+        is_user_reply: true,
+      };
+
+      // Update thread
+      const { error: threadError } = await supabase
+        .from('forum_threads')
+        .update({
+          verdict: verdictMode,
+          verdict_reason: reason,
+          label: verdictMode === "approved" ? "დადასტურებულია" : "უარყოფილია",
+          allow_replies: false,
+          updated_at: new Date()
+        })
+        .eq('id', selected.id);
+
+      if (threadError) throw threadError;
+
+      // Add admin post
+      const { error: postError } = await supabase
+        .from('forum_posts')
+        .insert([adminPost]);
+
+      if (postError) throw postError;
+
+      await supabase.rpc('increment_forum_thread_replies', { thread_id: selected.id });
+
+      // Update local state
+      setThreads(prev => prev.map(t => 
+        t.id === selected.id 
+          ? { 
+              ...t, 
+              verdict: verdictMode, 
+              verdict_reason: reason,
+              label: verdictMode === "approved" ? "დადასტურებულია" : "უარყოფილია",
+              allow_replies: false,
+              posts: [...(t.posts || []), adminPost],
+              repliesCount: (t.repliesCount || 0) + 1
+            }
+          : t
+      ));
+
+      setVerdictMode(null);
+      setReason("");
+    } catch (error) {
+      console.error('Error saving verdict:', error);
+      alert('❌ გადაწყვეტილების შენახვა ვერ მოხერხდა');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleCloseVacancy = (threadId, cvId) => {
-    const cvs = JSON.parse(localStorage.getItem("grl_cvs") || "[]");
-    const cv = cvs.find(c => c.id === cvId);
-    
-    persist(all => all.map(t => {
-      if (t.id !== threadId) return t;
-      return {
-        ...t,
-        isClosed: true,
-        label: "დახურულია ✓ აყვანილია",
-        allowReplies: false,
-        updated_at: new Date().toISOString(),
-        closedBy: adminUser?.username || "ადმინი",
-        closedAt: new Date().toISOString(),
-      };
-    }));
+  const handleCloseVacancy = async (threadId, cvId) => {
+    try {
+      // Update thread
+      const { error: threadError } = await supabase
+        .from('forum_threads')
+        .update({
+          is_closed: true,
+          label: "დახურულია ✓ აყვანილია",
+          allow_replies: false,
+          closed_by: adminUser?.username || "ადმინი",
+          closed_at: new Date(),
+          updated_at: new Date()
+        })
+        .eq('id', threadId);
 
-    if (cv) {
-      const updatedCVs = cvs.map(c => 
-        c.id === cvId ? { ...c, hired: true, hiredAt: new Date().toISOString(), hiredBy: adminUser?.username } : c
-      );
-      localStorage.setItem("grl_cvs", JSON.stringify(updatedCVs));
+      if (threadError) throw threadError;
+
+      // Update CV
+      const { error: cvError } = await supabase
+        .from('forum_cvs')
+        .update({
+          hired: true,
+          hired_at: new Date(),
+          hired_by: adminUser?.username
+        })
+        .eq('id', cvId);
+
+      if (cvError) throw cvError;
+
+      setThreads(prev => prev.map(t => 
+        t.id === threadId 
+          ? { 
+              ...t, 
+              is_closed: true, 
+              label: "დახურულია ✓ აყვანილია",
+              allow_replies: false,
+              closed_by: adminUser?.username,
+              closed_at: new Date()
+            }
+          : t
+      ));
+
+    } catch (error) {
+      console.error('Error closing vacancy:', error);
+      alert('❌ ვაკანსიის დახურვა ვერ მოხერხდა');
     }
   };
 
@@ -1825,7 +2145,7 @@ export default function AdminPanel() {
               </button>
               <button className={`adm-tab${activeSection==="cvs"?" active":""}`} onClick={()=>setActiveSection("cvs")}>
                 <Briefcase size={15}/> CV-ები
-                <span className="adm-tab-count">{totalCVs}</span>
+                <span className="adm-tab-count">{cvsCount}</span>
               </button>
             </div>
 
@@ -1881,7 +2201,7 @@ export default function AdminPanel() {
                           <div style={{ fontSize:13, marginTop:4 }}>მოთამაშეების მიერ შექმნილი საჩივრები აქ გამოჩნდება</div>
                         </div>
                       ) : filtered.map(t => {
-                        const sub = SUBFORUM_INFO[t.subforumId];
+                        const sub = SUBFORUM_INFO[t.subforum_id];
                         const status = getStatusBadge(t.verdict);
                         const StatusIcon = status.icon;
                         return (
@@ -1892,7 +2212,7 @@ export default function AdminPanel() {
                                 <span style={{ fontSize:11, color:"var(--adm-muted)" }}>{sub?.icon} {sub?.title}</span>
                               </div>
                               <div style={{ fontWeight:700, fontSize:14, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{t.title}</div>
-                              <div style={{ fontSize:12, color:"var(--adm-muted)", marginTop:3 }}><User size={12} style={{ display:"inline", marginRight:4 }}/> {t.author} · {t.date}</div>
+                              <div style={{ fontSize:12, color:"var(--adm-muted)", marginTop:3 }}><User size={12} style={{ display:"inline", marginRight:4 }}/> {t.author} · {t.date ? new Date(t.date).toLocaleDateString('ka-GE') : ''}</div>
                             </div>
                             <div style={{ fontSize:11, color:"var(--adm-muted-2)", flexShrink:0, textAlign:"right" }}>
                               <div>{t.posts?.length||0} პ</div>
@@ -1921,7 +2241,7 @@ export default function AdminPanel() {
                               <span style={{ color:"var(--adm-muted-2)" }}>·</span>
                               <span className={`adm-badge ${statusInfo.className}`}><statusInfo.icon size={12}/> {statusInfo.label}</span>
                               <span style={{ color:"var(--adm-muted-2)" }}>·</span>
-                              <span style={{ fontSize:12, color:"var(--adm-muted-2)" }}>{selected.date}</span>
+                              <span style={{ fontSize:12, color:"var(--adm-muted-2)" }}>{selected.date ? new Date(selected.date).toLocaleDateString('ka-GE') : ''}</span>
                             </div>
                           </div>
                           {!selected.verdict && (
@@ -1938,15 +2258,15 @@ export default function AdminPanel() {
 
                         <div className="adm-scroll" style={{ flex:1, overflowY:"auto", padding:"18px 20px" }}>
                           {(selected.posts||[]).map(post => (
-                            <div key={post.id} className={`adm-post ${post.isAdminPost?"adm-post-admin":"adm-post-user"}`}>
+                            <div key={post.id} className={`adm-post ${post.is_admin_post?"adm-post-admin":"adm-post-user"}`}>
                               <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
-                                <div style={{ width:32, height:32, borderRadius:"50%", background:post.avatarBg||"linear-gradient(135deg,#ec4899,#f43f5e)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:13, fontWeight:700, flexShrink:0 }}>
-                                  {post.author[0].toUpperCase()}
+                                <div style={{ width:32, height:32, borderRadius:"50%", background:post.author_avatar_bg||"linear-gradient(135deg,#ec4899,#f43f5e)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:13, fontWeight:700, flexShrink:0 }}>
+                                  {post.author[0]?.toUpperCase()}
                                 </div>
                                 <div>
-                                  <span style={{ fontWeight:700, fontSize:14, color:post.isAdminPost?"var(--adm-pink)":"var(--adm-text)" }}>{post.author}</span>
-                                  {post.isAdminPost && <span className="adm-badge adm-badge-pink" style={{ fontSize:9, marginLeft:8 }}>ადმინი</span>}
-                                  <div style={{ fontSize:11, color:"var(--adm-muted-2)" }}>{post.date}</div>
+                                  <span style={{ fontWeight:700, fontSize:14, color:post.is_admin_post?"var(--adm-pink)":"var(--adm-text)" }}>{post.author}</span>
+                                  {post.is_admin_post && <span className="adm-badge adm-badge-pink" style={{ fontSize:9, marginLeft:8 }}>ადმინი</span>}
+                                  <div style={{ fontSize:11, color:"var(--adm-muted-2)" }}>{post.date ? new Date(post.date).toLocaleString('ka-GE') : ''}</div>
                                 </div>
                               </div>
                               <p style={{ color:"var(--adm-text)", fontSize:14, lineHeight:1.7, margin:0, whiteSpace:"pre-wrap" }}>{post.content}</p>

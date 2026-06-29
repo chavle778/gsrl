@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-
+import { supabase } from "../supabaseClient";
 function Navbar() {
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [showAuth, setShowAuth] = useState(false);
   const [authMode, setAuthMode] = useState("login");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const on = () => setScrolled(window.scrollY > 20);
@@ -21,129 +22,198 @@ function Navbar() {
   // ─── CHAVLE-ს ადმინის შემოწმება ──────────────────────────────────────
   const isChavle = (username) => username?.toLowerCase() === "chavle";
 
-  // ─── მომხმარებლის ჩატვირთვა ──────────────────────────────────────────
+  // ─── მომხმარებლის ჩატვირთვა Supabase-დან ────────────────────────────
   useEffect(() => {
-    const checkUser = () => {
+    const loadUser = async () => {
       try {
-        const saved = localStorage.getItem("grl_current_user");
-        if (saved) {
-          const user = JSON.parse(saved);
-          if (isChavle(user.username) && !user.isAdmin) {
-            user.isAdmin = true;
-            user.role = "ადმინისტრატორი";
-            localStorage.setItem("grl_current_user", JSON.stringify(user));
-            
-            const users = JSON.parse(localStorage.getItem("grl_users") || "[]");
-            const updatedUsers = users.map(u => {
-              if (u.username.toLowerCase() === "chavle") {
-                return { ...u, isAdmin: true, role: "ადმინისტრატორი" };
-              }
-              return u;
-            });
-            localStorage.setItem("grl_users", JSON.stringify(updatedUsers));
-          }
-          setCurrentUser(user);
-          console.log("Navbar: User loaded:", user.username, "isAdmin:", user.isAdmin);
+        setLoading(true);
+        
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (session?.user) {
+          const { data: profile, error } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', session.user.id)
+            .single();
+
+          if (error) throw error;
+
+          const userData = {
+            id: session.user.id,
+            username: profile.username || session.user.user_metadata?.username,
+            email: session.user.email,
+            avatarBg: profile.avatar_bg || 'linear-gradient(135deg,#ec4899,#8b5cf6)',
+            role: profile.role || 'player',
+            isAdmin: profile.is_admin || false,
+            registeredAt: profile.registered_at || session.user.created_at
+          };
+
+          setCurrentUser(userData);
         } else {
           setCurrentUser(null);
-          console.log("Navbar: No user found");
         }
-      } catch (e) {
-        console.error("Navbar: Error loading user:", e);
+      } catch (error) {
+        console.error("Navbar: Error loading user:", error);
         setCurrentUser(null);
+      } finally {
+        setLoading(false);
       }
     };
 
-    checkUser();
+    loadUser();
 
-    const handleUpdate = () => {
-      console.log("Navbar: Update event received");
-      checkUser();
-    };
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (event === 'SIGNED_IN' && session?.user) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', session.user.id)
+            .single();
 
-    window.addEventListener("storage", handleUpdate);
-    window.addEventListener("userUpdate", handleUpdate);
-    window.addEventListener("forumAuthChange", handleUpdate);
-    window.addEventListener("grlAuthChange", handleUpdate);
+          const userData = {
+            id: session.user.id,
+            username: profile?.username || session.user.user_metadata?.username,
+            email: session.user.email,
+            avatarBg: profile?.avatar_bg || 'linear-gradient(135deg,#ec4899,#8b5cf6)',
+            role: profile?.role || 'player',
+            isAdmin: profile?.is_admin || false,
+            registeredAt: profile?.registered_at || session.user.created_at
+          };
 
-    const interval = setInterval(() => {
-      const saved = localStorage.getItem("grl_current_user");
-      if (saved) {
-        try {
-          const user = JSON.parse(saved);
-          setCurrentUser(prev => {
-            if (!prev || prev.username !== user.username) {
-              return user;
-            }
-            return prev;
-          });
-        } catch (e) {}
-      } else {
-        setCurrentUser(null);
+          setCurrentUser(userData);
+        } else if (event === 'SIGNED_OUT') {
+          setCurrentUser(null);
+        }
       }
-    }, 500);
+    );
 
     return () => {
-      window.removeEventListener("storage", handleUpdate);
-      window.removeEventListener("userUpdate", handleUpdate);
-      window.removeEventListener("forumAuthChange", handleUpdate);
-      window.removeEventListener("grlAuthChange", handleUpdate);
-      clearInterval(interval);
+      subscription.unsubscribe();
     };
   }, []);
 
-  const handleLogout = () => {
-    localStorage.removeItem("grl_current_user");
-    setCurrentUser(null);
-    setShowAuth(false);
-    window.dispatchEvent(new Event("userUpdate"));
-    window.dispatchEvent(new Event("storage"));
-    window.dispatchEvent(new Event("forumAuthChange"));
-    window.dispatchEvent(new Event("grlAuthChange"));
+  // ─── Logout ──────────────────────────────────────────────────────────────
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+      setCurrentUser(null);
+      setMenuOpen(false);
+    } catch (error) {
+      console.error("Navbar: Logout error:", error);
+    }
   };
 
-  const handleLogin = (user) => {
-    if (isChavle(user.username)) {
-      user.isAdmin = true;
-      user.role = "ადმინისტრატორი";
-      localStorage.setItem("grl_current_user", JSON.stringify(user));
-      
-      const users = JSON.parse(localStorage.getItem("grl_users") || "[]");
-      const updatedUsers = users.map(u => {
-        if (u.username.toLowerCase() === "chavle") {
-          return { ...u, isAdmin: true, role: "ადმინისტრატორი" };
-        }
-        return u;
+  // ─── Login Handler (Username-ით) ──────────────────────────────────────
+  const handleLogin = async (username, password) => {
+    try {
+      // 1. ვეძებთ მომხმარებელს username-ით
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .select('id, email')
+        .eq('username', username)
+        .single();
+
+      if (profileError || !profile) {
+        throw new Error("მომხმარებელი არ მოიძებნა");
+      }
+
+      // 2. ვცდილობთ შესვლას email-ით და პაროლით
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: profile.email,
+        password: password
       });
-      localStorage.setItem("grl_users", JSON.stringify(updatedUsers));
+
+      if (error) {
+        if (error.message.includes("Invalid login credentials")) {
+          throw new Error("პაროლი არასწორია");
+        }
+        throw error;
+      }
+
+      setShowAuth(false);
+      return data;
+    } catch (error) {
+      console.error("Navbar: Login error:", error);
+      throw error;
     }
-    setCurrentUser(user);
-    setShowAuth(false);
-    window.dispatchEvent(new Event("userUpdate"));
-    window.dispatchEvent(new Event("forumAuthChange"));
-    window.dispatchEvent(new Event("grlAuthChange"));
   };
 
-  const handleRegister = (user) => {
-    if (isChavle(user.username)) {
-      user.isAdmin = true;
-      user.role = "ადმინისტრატორი";
-      localStorage.setItem("grl_current_user", JSON.stringify(user));
-      
-      const users = JSON.parse(localStorage.getItem("grl_users") || "[]");
-      const updatedUsers = users.map(u => {
-        if (u.username.toLowerCase() === "chavle") {
-          return { ...u, isAdmin: true, role: "ადმინისტრატორი" };
+  // ─── Register Handler ────────────────────────────────────────────────────
+  const handleRegister = async (username, email, password) => {
+    try {
+      // 1. ვამოწმებთ username უკვე არსებობს თუ არა
+      const { data: existing, error: checkError } = await supabase
+        .from('profiles')
+        .select('username')
+        .eq('username', username)
+        .single();
+
+      if (existing) {
+        throw new Error("მომხმარებელი ამ სახელით უკვე არსებობს");
+      }
+
+      // 2. ვამოწმებთ email უკვე არსებობს თუ არა
+      const { data: existingEmail } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('email', email)
+        .single();
+
+      if (existingEmail) {
+        throw new Error("მომხმარებელი ამ ელ-ფოსტით უკვე არსებობს");
+      }
+
+      // 3. ვქმნით მომხმარებელს Supabase Auth-ში
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            username: username
+          }
         }
-        return u;
       });
-      localStorage.setItem("grl_users", JSON.stringify(updatedUsers));
+
+      if (error) throw error;
+
+      // 4. დაველოდოთ პროფილის შექმნას (trigger-ი)
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // 5. ვამოწმებთ პროფილი შეიქმნა თუ არა
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('username', username)
+        .single();
+
+      if (!profile) {
+        // თუ არ შეიქმნა, ვქმნით ხელით
+        const { error: insertError } = await supabase
+          .from('profiles')
+          .insert([{
+            id: data.user.id,
+            username: username,
+            email: email,
+            avatar_bg: username.toLowerCase() === 'chavle' 
+              ? 'linear-gradient(135deg,#ff2d78,#8b00ff)'
+              : 'linear-gradient(135deg,#ec4899,#8b5cf6)',
+            role: username.toLowerCase() === 'chavle' ? 'admin' : 'player',
+            is_admin: username.toLowerCase() === 'chavle'
+          }]);
+
+        if (insertError) {
+          console.error("Profile creation error:", insertError);
+        }
+      }
+
+      setShowAuth(false);
+      return data;
+    } catch (error) {
+      console.error("Navbar: Register error:", error);
+      throw error;
     }
-    setCurrentUser(user);
-    setShowAuth(false);
-    window.dispatchEvent(new Event("userUpdate"));
-    window.dispatchEvent(new Event("forumAuthChange"));
-    window.dispatchEvent(new Event("grlAuthChange"));
   };
 
   const links = [
@@ -317,6 +387,11 @@ function Navbar() {
           transform: scale(1.02);
           box-shadow: 0 0 30px rgba(236, 72, 153, 0.3);
         }
+        .auth-modal .btn-primary:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+          transform: none;
+        }
         .auth-modal .switch-mode {
           text-align: center;
           font-size: 0.75rem;
@@ -449,7 +524,6 @@ function Navbar() {
           background: rgba(236, 72, 153, 0.1);
         }
 
-        /* Navbar layout */
         .navbar-container {
           display: flex;
           align-items: center;
@@ -542,7 +616,9 @@ function Navbar() {
             <div className="navbar-right">
               {/* DESKTOP AUTH BUTTONS */}
               <div className="desktop-auth-wrapper">
-                {currentUser ? (
+                {loading ? (
+                  <div className="text-sm text-muted-foreground">იტვირთება...</div>
+                ) : currentUser ? (
                   <div className="flex items-center gap-2">
                     <div className="desktop-user-info">
                       <div 
@@ -595,7 +671,7 @@ function Navbar() {
                       </svg>
                       <span>რეგისტრაცია</span>
                     </button>
-                  </>
+                  </> 
                 )}
               </div>
 
@@ -663,7 +739,9 @@ function Navbar() {
 
             {/* Mobile User Section */}
             <div className="px-5 py-3 border-t border-border/40">
-              {currentUser ? (
+              {loading ? (
+                <div className="text-center text-muted-foreground py-2">იტვირთება...</div>
+              ) : currentUser ? (
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div 
@@ -766,49 +844,27 @@ function Navbar() {
   );
 }
 
-// ─── Login Form ──────────────────────────────────────────────────────────────
+// ─── Login Form (Username-ით) ─────────────────────────────────────────────
 function LoginForm({ onLogin, onRegisterClick, onClose }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
+    setLoading(true);
 
-    const users = JSON.parse(localStorage.getItem("grl_users") || "[]");
-    const user = users.find(u => 
-      u.username.toLowerCase() === username.toLowerCase() && 
-      u.password === password
-    );
-
-    if (!user) {
-      setError("მომხმარებელი ან პაროლი არასწორია");
-      return;
+    try {
+      await onLogin(username, password);
+      onClose();
+    } catch (err) {
+      setError(err.message || "მომხმარებელი ან პაროლი არასწორია");
+    } finally {
+      setLoading(false);
     }
-
-    if (username.toLowerCase() === "chavle") {
-      user.isAdmin = true;
-      user.role = "ადმინისტრატორი";
-    }
-
-    localStorage.setItem("grl_current_user", JSON.stringify(user));
-    
-    const updatedUsers = users.map(u => {
-      if (u.username.toLowerCase() === "chavle") {
-        return { ...u, isAdmin: true, role: "ადმინისტრატორი" };
-      }
-      return u;
-    });
-    localStorage.setItem("grl_users", JSON.stringify(updatedUsers));
-    
-    window.dispatchEvent(new Event("storage"));
-    window.dispatchEvent(new Event("userUpdate"));
-    window.dispatchEvent(new Event("forumAuthChange"));
-    window.dispatchEvent(new Event("grlAuthChange"));
-    onLogin(user);
-    onClose();
   };
 
   return (
@@ -846,7 +902,7 @@ function LoginForm({ onLogin, onRegisterClick, onClose }) {
           required
           value={username}
           onChange={(e) => setUsername(e.target.value)}
-          placeholder="შეიყვანეთ მომხმარებლის სახელი"
+          placeholder="მაგ: Giga_Chad"
         />
       </div>
 
@@ -886,13 +942,19 @@ function LoginForm({ onLogin, onRegisterClick, onClose }) {
         </div>
       </div>
 
-      <button type="submit" className="btn-primary">
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-          <polyline points="10 17 15 12 10 7" />
-          <line x1="15" y1="12" x2="3" y2="12" />
-        </svg>
-        შესვლა
+      <button type="submit" className="btn-primary" disabled={loading}>
+        {loading ? (
+          <svg className="animate-spin" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+          </svg>
+        ) : (
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+            <polyline points="10 17 15 12 10 7" />
+            <line x1="15" y1="12" x2="3" y2="12" />
+          </svg>
+        )}
+        {loading ? "იტვირთება..." : "შესვლა"}
       </button>
 
       <p className="switch-mode">
@@ -905,7 +967,7 @@ function LoginForm({ onLogin, onRegisterClick, onClose }) {
   );
 }
 
-// ─── Register Form ──────────────────────────────────────────────────────────
+// ─── Register Form (Username + Email) ─────────────────────────────────────
 function RegisterForm({ onRegister, onLoginClick, onClose }) {
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
@@ -913,76 +975,57 @@ function RegisterForm({ onRegister, onLoginClick, onClose }) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
+    setLoading(true);
 
     if (username.length < 3) {
       setError("მომხმარებლის სახელი უნდა შეიცავდეს მინიმუმ 3 სიმბოლოს");
+      setLoading(false);
       return;
     }
     if (username.length > 20) {
       setError("მომხმარებლის სახელი არ უნდა აღემატებოდეს 20 სიმბოლოს");
+      setLoading(false);
       return;
     }
     if (!/^[a-zA-Z0-9_]+$/.test(username)) {
       setError("მომხმარებლის სახელი უნდა შეიცავდეს მხოლოდ ასოებს, ციფრებს და ქვედა ხაზს");
+      setLoading(false);
       return;
     }
     if (!email.includes("@") || !email.includes(".")) {
       setError("გთხოვთ მიუთითოთ სწორი ელ-ფოსტა");
+      setLoading(false);
       return;
     }
     if (password.length < 6) {
       setError("პაროლი უნდა შეიცავდეს მინიმუმ 6 სიმბოლოს");
+      setLoading(false);
       return;
     }
     if (password !== confirmPassword) {
       setError("პაროლები არ ემთხვევა");
+      setLoading(false);
       return;
     }
 
-    const users = JSON.parse(localStorage.getItem("grl_users") || "[]");
-    if (users.find(u => u.username.toLowerCase() === username.toLowerCase())) {
-      setError("მომხმარებელი ამ სახელით უკვე არსებობს");
-      return;
+    try {
+      await onRegister(username, email, password);
+      setSuccess(true);
+      
+      setTimeout(() => {
+        onClose();
+      }, 1500);
+    } catch (err) {
+      setError(err.message || "რეგისტრაცია ვერ მოხერხდა");
+    } finally {
+      setLoading(false);
     }
-    if (users.find(u => u.email.toLowerCase() === email.toLowerCase())) {
-      setError("მომხმარებელი ამ ელ-ფოსტით უკვე არსებობს");
-      return;
-    }
-
-    const isAdmin = username.toLowerCase() === "chavle";
-    const colors = ["#ec4899","#8b5cf6","#3b82f6","#10b981","#f59e0b","#ef4444"];
-    const c1 = colors[Math.floor(Math.random() * colors.length)];
-    const c2 = colors[Math.floor(Math.random() * colors.length)];
-
-    const newUser = {
-      id: `user-${Date.now()}`,
-      username,
-      email,
-      password,
-      registeredAt: new Date().toISOString(),
-      role: isAdmin ? "ადმინისტრატორი" : "მოთამაშე",
-      avatarBg: isAdmin ? "linear-gradient(135deg,#ff2d78,#8b00ff)" : `linear-gradient(135deg,${c1},${c2})`,
-      isAdmin,
-    };
-
-    users.push(newUser);
-    localStorage.setItem("grl_users", JSON.stringify(users));
-    localStorage.setItem("grl_current_user", JSON.stringify(newUser));
-    window.dispatchEvent(new Event("storage"));
-    window.dispatchEvent(new Event("userUpdate"));
-    window.dispatchEvent(new Event("forumAuthChange"));
-    window.dispatchEvent(new Event("grlAuthChange"));
-    setSuccess(true);
-    
-    setTimeout(() => {
-      onRegister(newUser);
-      onClose();
-    }, 1500);
   };
 
   if (success) {
@@ -1115,14 +1158,20 @@ function RegisterForm({ onRegister, onLoginClick, onClose }) {
         />
       </div>
 
-      <button type="submit" className="btn-primary">
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-          <circle cx="8.5" cy="7" r="4" />
-          <line x1="20" y1="8" x2="20" y2="14" />
-          <line x1="23" y1="11" x2="17" y2="11" />
-        </svg>
-        რეგისტრაცია
+      <button type="submit" className="btn-primary" disabled={loading}>
+        {loading ? (
+          <svg className="animate-spin" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+          </svg>
+        ) : (
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+            <circle cx="8.5" cy="7" r="4" />
+            <line x1="20" y1="8" x2="20" y2="14" />
+            <line x1="23" y1="11" x2="17" y2="11" />
+          </svg>
+        )}
+        {loading ? "იტვირთება..." : "რეგისტრაცია"}
       </button>
 
       <p className="switch-mode"> 
